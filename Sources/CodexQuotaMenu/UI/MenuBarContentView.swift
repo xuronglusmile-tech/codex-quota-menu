@@ -17,13 +17,16 @@ enum ResetCreditUrgency {
 
 struct MenuBarContentView: View {
     @ObservedObject var store: QuotaStore
+    @ObservedObject var launchAtLogin: LaunchAtLoginController
     private let now: @Sendable () -> Date
 
     init(
         store: QuotaStore,
+        launchAtLogin: LaunchAtLoginController,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.store = store
+        self.launchAtLogin = launchAtLogin
         self.now = now
     }
 
@@ -32,12 +35,15 @@ struct MenuBarContentView: View {
             header
             quotaContent
             statusContent
+            settingsControls
             Divider()
-            notificationControls
             footer
         }
         .padding(14)
         .frame(width: 330)
+        .onAppear {
+            launchAtLogin.refresh()
+        }
     }
 
     private var header: some View {
@@ -176,21 +182,27 @@ struct MenuBarContentView: View {
         }
     }
 
-    private var notificationControls: some View {
+    private var settingsControls: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Toggle(
-                "重置额度到期提醒",
-                isOn: Binding(
-                    get: { store.notificationsEnabled },
-                    set: { enabled in
-                        Task { await store.setNotificationsEnabled(enabled) }
-                    }
-                )
-            )
-            if store.notificationPermission == .denied {
-                Text("通知权限已关闭，请在系统设置中启用。")
+            Toggle("登录时启动", isOn: Binding(
+                get: { launchAtLogin.isEnabled },
+                set: { launchAtLogin.setEnabled($0) }
+            ))
+            Toggle("到期通知", isOn: Binding(
+                get: { store.notificationsEnabled },
+                set: { enabled in
+                    Task { await store.setNotificationsEnabled(enabled) }
+                }
+            ))
+            if store.notificationsEnabled && store.notificationPermission == .denied {
+                Text("通知权限未启用；额度显示不受影响。")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.orange)
+            }
+            if let message = launchAtLogin.message {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
         }
     }
