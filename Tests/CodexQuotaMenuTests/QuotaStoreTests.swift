@@ -325,6 +325,46 @@ struct QuotaStoreTests {
     }
 
     @Test
+    func testStopDuringStartupPermissionReadPreventsPostStopStateMutation() async {
+        let now = Date(timeIntervalSince1970: 5_000)
+        let cached = Self.snapshot(fetchedAt: now, count: 4)
+        let reader = SequenceQuotaReader(snapshots: [cached])
+        let notifications = SuspendedPermissionNotifications(
+            enabled: false,
+            permission: .denied
+        )
+        let completion = CompletionProbe()
+        let store = QuotaStore(
+            reader: reader,
+            cache: MemoryQuotaCache(snapshot: cached),
+            notifications: notifications,
+            now: { now }
+        )
+
+        store.start()
+        await notifications.waitUntilPermissionStateIsSuspended()
+        let stateBeforeStop = store.state
+        let enabledBeforeStop = store.notificationsEnabled
+        let permissionBeforeStop = store.notificationPermission
+
+        let stop = Task {
+            await store.stop()
+            await completion.markFinished()
+        }
+        await reader.waitUntilShutdownCount(1)
+        #expect(!(await completion.isFinished))
+
+        await notifications.resumePermissionState()
+        await stop.value
+
+        #expect(store.state == stateBeforeStop)
+        #expect(store.notificationsEnabled == enabledBeforeStop)
+        #expect(store.notificationPermission == permissionBeforeStop)
+        #expect(store.notificationPermission == .unknown)
+        #expect(await reader.readCount == 0)
+    }
+
+    @Test
     func testNotificationSettingUpdatesPermissionWithoutChangingQuotaState() async {
         let now = Date(timeIntervalSince1970: 5_000)
         let live = Self.snapshot(fetchedAt: now, count: 5)
@@ -355,6 +395,25 @@ struct QuotaStoreTests {
         #expect(!ResetCreditUrgency.isUrgent(expiresAt: now.addingTimeInterval(-1), now: now))
         #expect(!ResetCreditUrgency.isUrgent(expiresAt: nil, now: now))
         #expect(!ResetCreditUrgency.isUrgent(expiresAt: now.addingTimeInterval(86_401), now: now))
+    }
+
+    @Test
+    func testUrgentStatusTextIsVisibleOnlyForFutureCreditsWithinOneDay() {
+        let now = Date(timeIntervalSince1970: 5_000)
+
+        #expect(
+            ResetCreditUrgency.statusText(
+                expiresAt: now.addingTimeInterval(86_400),
+                now: now
+            ) == "即将到期"
+        )
+        #expect(ResetCreditUrgency.statusText(expiresAt: now, now: now) == nil)
+        #expect(
+            ResetCreditUrgency.statusText(
+                expiresAt: now.addingTimeInterval(86_401),
+                now: now
+            ) == nil
+        )
     }
 
     private static func snapshot(fetchedAt: Date, count: Int) -> QuotaSnapshot {
@@ -406,6 +465,7 @@ private actor StubQuotaReader: QuotaReading {
 
 private actor SequenceQuotaReader: QuotaReading {
     private var snapshots: [QuotaSnapshot]
+    private var shutdownWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
     private(set) var readCount = 0
     private(set) var shutdownCount = 0
 
@@ -421,6 +481,16 @@ private actor SequenceQuotaReader: QuotaReading {
 
     func shutdown() async {
         shutdownCount += 1
+        let ready = shutdownWaiters.filter { $0.0 <= shutdownCount }
+        shutdownWaiters.removeAll { $0.0 <= shutdownCount }
+        ready.forEach { $0.1.resume() }
+    }
+
+    func waitUntilShutdownCount(_ target: Int) async {
+        guard shutdownCount < target else { return }
+        await withCheckedContinuation { continuation in
+            shutdownWaiters.append((target, continuation))
+        }
     }
 }
 
@@ -588,6 +658,51 @@ private actor RecordingNotifications: ExpiryNotificationReconciling {
 
     func permissionState() async -> NotificationPermissionState {
         permission
+    }
+}
+
+private actor SuspendedPermissionNotifications: ExpiryNotificationReconciling {
+    private let enabled: Bool
+    private let permission: NotificationPermissionState
+    private var permissionContinuation: CheckedContinuation<Void, Never>?
+    private var suspensionWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(enabled: Bool, permission: NotificationPermissionState) {
+        self.enabled = enabled
+        self.permission = permission
+    }
+
+    func requestAuthorization() async {}
+
+    func reconcile(snapshot: QuotaSnapshot, now: Date) async {}
+
+    func setEnabled(_ enabled: Bool) async {}
+
+    func isEnabled() async -> Bool {
+        enabled
+    }
+
+    func permissionState() async -> NotificationPermissionState {
+        await withCheckedContinuation { continuation in
+            permissionContinuation = continuation
+            let waiters = suspensionWaiters
+            suspensionWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+        return permission
+    }
+
+    func waitUntilPermissionStateIsSuspended() async {
+        guard permissionContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            suspensionWaiters.append(continuation)
+        }
+    }
+
+    func resumePermissionState() {
+        let continuation = permissionContinuation
+        permissionContinuation = nil
+        continuation?.resume()
     }
 }
 

@@ -176,11 +176,12 @@ final class QuotaStore: ObservableObject {
             finishLoop(generation: generation, id: id)
             return
         }
-        notificationPermission = await notifications.permissionState()
+        let permission = await notifications.permissionState()
         guard isRunning(generation: generation) else {
             finishLoop(generation: generation, id: id)
             return
         }
+        notificationPermission = permission
 
         await refresh(generation: generation)
         while isRunning(generation: generation) {

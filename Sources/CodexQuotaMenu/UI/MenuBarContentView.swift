@@ -9,6 +9,10 @@ enum ResetCreditUrgency {
         let remaining = expiresAt.timeIntervalSince(now)
         return remaining > 0 && remaining <= thresholdSeconds
     }
+
+    static func statusText(expiresAt: Date?, now: Date) -> String? {
+        isUrgent(expiresAt: expiresAt, now: now) ? "即将到期" : nil
+    }
 }
 
 struct MenuBarContentView: View {
@@ -112,35 +116,50 @@ struct MenuBarContentView: View {
     private func resetCredits(_ credits: [ResetCredit]?) -> some View {
         if let credits {
             ForEach(credits) { credit in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Text(credit.title ?? "Full reset")
-                        Spacer()
-                        Text(
-                            credit.expiresAt?.formatted(
-                                date: .abbreviated,
-                                time: .shortened
-                            ) ?? "不过期"
-                        )
-                        .foregroundStyle(
-                            ResetCreditUrgency.isUrgent(
-                                expiresAt: credit.expiresAt,
-                                now: now()
-                            ) ? .orange : .secondary
-                        )
-                    }
-                    if let detail = credit.detail, !detail.isEmpty {
-                        Text(detail)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .font(.caption)
+                resetCreditRow(credit)
             }
         } else {
             Text("到期详情暂不可用")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private func resetCreditRow(_ credit: ResetCredit) -> some View {
+        let urgentStatus = ResetCreditUrgency.statusText(
+            expiresAt: credit.expiresAt,
+            now: now()
+        )
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(credit.title ?? "Full reset")
+                Spacer()
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(
+                        credit.expiresAt?.formatted(
+                            date: .abbreviated,
+                            time: .shortened
+                        ) ?? "不过期"
+                    )
+                    .foregroundStyle(
+                        urgentStatus == nil ? Color.secondary : Color.orange
+                    )
+                    if let urgentStatus {
+                        Label(
+                            urgentStatus,
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                    }
+                }
+            }
+            if let detail = credit.detail, !detail.isEmpty {
+                Text(detail)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption)
     }
 
     @ViewBuilder

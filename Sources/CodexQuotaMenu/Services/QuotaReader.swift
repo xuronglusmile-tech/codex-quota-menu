@@ -32,6 +32,11 @@ protocol ProductionRateLimitsClient: RateLimitsReading, AnyObject {
 extension CodexAppServerClient: ProductionRateLimitsClient {}
 
 actor ProductionQuotaReader: QuotaReading {
+    private enum LifecycleState {
+        case active(generation: UInt64)
+        case stopping(generation: UInt64, task: Task<Void, Never>?)
+    }
+
     typealias ClientFactory = @Sendable (
         URL,
         [String]
@@ -45,7 +50,7 @@ actor ProductionQuotaReader: QuotaReading {
     private let locator: any CodexExecutableLocating
     private let makeClient: ClientFactory
     private let now: @Sendable () -> Date
-    private var generation: UInt64 = 0
+    private var lifecycle = LifecycleState.active(generation: 0)
     private var client: OwnedClient?
 
     init(
@@ -66,7 +71,9 @@ actor ProductionQuotaReader: QuotaReading {
     }
 
     func read() async throws -> QuotaSnapshot {
-        let generation = generation
+        guard case .active(let generation) = lifecycle else {
+            throw CancellationError()
+        }
         let ownedClient = try client(for: generation)
         let snapshot = try await LiveQuotaReader(
             client: ownedClient,
@@ -75,6 +82,8 @@ actor ProductionQuotaReader: QuotaReading {
 
         try Task<Never, Never>.checkCancellation()
         guard
+            case .active(let currentGeneration) = lifecycle,
+            currentGeneration == generation,
             let client,
             client.generation == generation,
             client.value === ownedClient
@@ -85,10 +94,30 @@ actor ProductionQuotaReader: QuotaReading {
     }
 
     func shutdown() async {
-        generation &+= 1
-        guard let client else { return }
-        self.client = nil
-        await client.value.stop()
+        while true {
+            switch lifecycle {
+            case .active(let generation):
+                guard let client else { return }
+                lifecycle = .stopping(generation: generation, task: nil)
+                self.client = nil
+
+                let task = Task { [weak self] in
+                    await client.value.stop()
+                    guard let self else { return }
+                    await self.finishShutdown(generation: generation)
+                }
+                lifecycle = .stopping(generation: generation, task: task)
+                await task.value
+                return
+
+            case .stopping(_, let task):
+                if let task {
+                    await task.value
+                    return
+                }
+                await Task<Never, Never>.yield()
+            }
+        }
     }
 
     private func client(
@@ -105,5 +134,13 @@ actor ProductionQuotaReader: QuotaReading {
         let client = makeClient(executable, ["app-server", "--stdio"])
         self.client = OwnedClient(generation: generation, value: client)
         return client
+    }
+
+    private func finishShutdown(generation: UInt64) {
+        guard case .stopping(let currentGeneration, _) = lifecycle,
+              currentGeneration == generation else {
+            return
+        }
+        lifecycle = .active(generation: generation &+ 1)
     }
 }
