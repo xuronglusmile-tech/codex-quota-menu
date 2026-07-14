@@ -138,7 +138,7 @@ account/rateLimits/read
 - 未知 JSON 字段由解码器忽略。
 - 可选字段缺失时使用明确的“未知”状态，不伪造数值。
 - 关键响应结构缺失时返回兼容性错误。
-- 不把重置额度的后端 ID写入日志或 UI。
+- 不把重置额度的后端 ID 写入日志或 UI；原始 ID 仅在当前进程内存中存在。
 
 ### 5.5 `QuotaCache`
 
@@ -148,14 +148,14 @@ account/rateLimits/read
 ~/Library/Application Support/Codex Quota Menu/quota-cache.json
 ```
 
-缓存只包含展示所需的额度窗口、到期时间和获取时间，不包含登录凭据。缓存写入使用临时文件加原子替换，损坏时直接忽略。
+缓存只包含展示所需的额度窗口、到期时间、获取时间，以及通知去重所需的不可逆哈希，不包含登录凭据或原始重置额度 ID。缓存 DTO 与运行时协议模型分离，避免把完整响应直接编码到磁盘。缓存写入使用临时文件加原子替换，损坏时直接忽略。
 
 ### 5.6 `ExpiryNotificationScheduler`
 
 使用 `UNUserNotificationCenter`：
 
 - 根据 `expiresAt - 24 小时` 安排本地通知。
-- 使用重置额度 ID 与到期时间生成本地去重键；原始 ID 不写入日志。
+- 使用重置额度 ID 与到期时间生成 SHA-256 去重键；原始 ID 不写入日志或磁盘。
 - 每次刷新后取消已经不存在或状态不再可用的待发送通知。
 - 对 `expiresAt == null` 的额度显示“不过期”，不安排通知。
 
@@ -275,7 +275,7 @@ struct ResetCredit: Codable, Equatable, Identifiable {
 - 不使用 shell 拼接命令；`Process.executableURL` 和参数均为固定、验证后的值。
 - 不记录完整 App Server 响应、账号标识、重置额度 ID 或认证信息。
 - JSON-RPC 方法使用只读白名单，单元测试检查不存在 `consume` 方法。
-- 所有缓存仅存放额度展示数据；卸载说明包含缓存清理路径。
+- 缓存仅存放额度展示数据和通知去重哈希；卸载说明包含缓存清理路径。
 
 ## 11. 测试策略
 
