@@ -1438,12 +1438,12 @@ Add two assertions to `ExpiryNotificationSchedulerTests`:
 ```swift
 func testPlannerProducesStableIdentifierForPersistentDeduplication() {
     let now = Date(timeIntervalSince1970: 1_000)
-    let credit = ResetCredit(id: String(repeating: "c", count: 64), status: .available, grantedAt: now, expiresAt: now.addingTimeInterval(172_800), title: nil, detail: nil)
+    let creditID = String(repeating: "c", count: 64)
+    let credit = ResetCredit(id: creditID, status: .available, grantedAt: now, expiresAt: now.addingTimeInterval(172_800), title: nil, detail: nil)
     let snapshot = QuotaSnapshot(windows: [QuotaWindow(id: "w", label: "额度", usedPercent: 1, durationMinutes: nil, resetsAt: nil)], availableResetCount: 1, resetCredits: [credit], fetchedAt: now)
-    XCTAssertEqual(
-        ExpiryNotificationPlanner.plans(for: snapshot, now: now).map(\.identifier),
-        ExpiryNotificationPlanner.plans(for: snapshot, now: now).map(\.identifier)
-    )
+    let expectedIdentifiers = ["codex-reset-\(creditID)"]
+    XCTAssertEqual(ExpiryNotificationPlanner.plans(for: snapshot, now: now).map(\.identifier), expectedIdentifiers)
+    XCTAssertEqual(ExpiryNotificationPlanner.plans(for: snapshot, now: now).map(\.identifier), expectedIdentifiers)
 }
 
 func testNotificationPreferenceDefaultsToEnabled() async {
