@@ -8,7 +8,7 @@ struct QuotaWindow: Codable, Equatable, Identifiable, Sendable {
     let resetsAt: Date?
 
     var remainingPercent: Int {
-        min(max(100 - usedPercent, 0), 100)
+        100 - min(max(usedPercent, 0), 100)
     }
 }
 

@@ -8,9 +8,11 @@ struct QuotaModelsTests {
 
     @Test
     func testRemainingPercentIsClamped() {
+        #expect(QuotaWindow(id: "min", label: "Minimum", usedPercent: Int.min, durationMinutes: nil, resetsAt: nil).remainingPercent == 100)
         #expect(QuotaWindow(id: "a", label: "A", usedPercent: -2, durationMinutes: 300, resetsAt: nil).remainingPercent == 100)
         #expect(QuotaWindow(id: "b", label: "B", usedPercent: 53, durationMinutes: 10_080, resetsAt: nil).remainingPercent == 47)
         #expect(QuotaWindow(id: "c", label: "C", usedPercent: 140, durationMinutes: nil, resetsAt: nil).remainingPercent == 0)
+        #expect(QuotaWindow(id: "max", label: "Maximum", usedPercent: Int.max, durationMinutes: nil, resetsAt: nil).remainingPercent == 0)
     }
 
     @Test
