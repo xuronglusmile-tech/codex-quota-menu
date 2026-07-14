@@ -1,0 +1,658 @@
+import Foundation
+import Testing
+@testable import CodexQuotaMenu
+
+@Suite(.serialized)
+@MainActor
+struct QuotaStoreTests {
+    @Test
+    func testRefreshIntervalIsExactlyFiveMinutes() {
+        #expect(QuotaStore.refreshIntervalSeconds == 300)
+    }
+
+    @Test
+    func testLoadsCacheThenRefreshesAndReconcilesNotifications() async {
+        let now = Date(timeIntervalSince1970: 2_000)
+        let cached = Self.snapshot(fetchedAt: now.addingTimeInterval(-60), count: 2)
+        let live = Self.snapshot(fetchedAt: now, count: 5)
+        let cache = MemoryQuotaCache(snapshot: cached)
+        let notifications = RecordingNotifications()
+        let store = QuotaStore(
+            reader: StubQuotaReader(result: .success(live)),
+            cache: cache,
+            notifications: notifications,
+            now: { now }
+        )
+
+        await store.loadCache()
+        #expect(store.state == .fresh(cached))
+        await store.refresh()
+
+        #expect(store.state == .fresh(live))
+        #expect(await notifications.snapshots == [live])
+        #expect(store.lastErrorMessage == nil)
+    }
+
+    @Test
+    func testStartLoadsCacheBeforeItsImmediateRefresh() async {
+        let now = Date(timeIntervalSince1970: 2_000)
+        let cached = Self.snapshot(fetchedAt: now.addingTimeInterval(-60), count: 2)
+        let live = Self.snapshot(fetchedAt: now, count: 5)
+        let reader = BlockingQuotaReader()
+        let sleeper = ControlledStoreSleeper()
+        let store = QuotaStore(
+            reader: reader,
+            cache: MemoryQuotaCache(snapshot: cached),
+            notifications: RecordingNotifications(),
+            now: { now },
+            sleep: { try await sleeper.sleep(seconds: $0) }
+        )
+
+        store.start()
+        await reader.waitUntilReadCount(1)
+
+        #expect(store.state == .fresh(cached))
+        await reader.resumeNext(returning: live)
+        await sleeper.waitUntilRequestCount(1)
+        #expect(store.state == .fresh(live))
+
+        await store.stop()
+    }
+
+    @Test
+    func testLaunchAndEveryAutomaticDelayRequestExactlyThreeHundredSeconds() async {
+        let now = Date(timeIntervalSince1970: 2_000)
+        let reader = SequenceQuotaReader(snapshots: [
+            Self.snapshot(fetchedAt: now, count: 1),
+            Self.snapshot(fetchedAt: now.addingTimeInterval(300), count: 2)
+        ])
+        let sleeper = ControlledStoreSleeper()
+        let store = QuotaStore(
+            reader: reader,
+            cache: MemoryQuotaCache(snapshot: nil),
+            notifications: RecordingNotifications(),
+            now: { now },
+            sleep: { try await sleeper.sleep(seconds: $0) }
+        )
+
+        store.start()
+        await sleeper.waitUntilRequestCount(1)
+        #expect(await reader.readCount == 1)
+        #expect(await sleeper.requestedSeconds == [300])
+
+        await sleeper.resumeNext()
+        await sleeper.waitUntilRequestCount(2)
+        #expect(await reader.readCount == 2)
+        #expect(await sleeper.requestedSeconds == [300, 300])
+
+        await store.stop()
+    }
+
+    @Test
+    func testConcurrentRefreshesCoalesceToOneRead() async {
+        let now = Date(timeIntervalSince1970: 2_000)
+        let live = Self.snapshot(fetchedAt: now, count: 5)
+        let reader = BlockingQuotaReader()
+        let store = QuotaStore(
+            reader: reader,
+            cache: MemoryQuotaCache(snapshot: nil),
+            notifications: RecordingNotifications(),
+            now: { now }
+        )
+
+        let first = Task { await store.refresh() }
+        await reader.waitUntilReadCount(1)
+        let second = Task { await store.refresh() }
+        await Task<Never, Never>.yield()
+
+        #expect(await reader.readCount == 1)
+        await reader.resumeNext(returning: live)
+        await first.value
+        await second.value
+        #expect(store.state == .fresh(live))
+    }
+
+    @Test
+    func testManualRefreshCoalescesWithLaunchRefresh() async {
+        let now = Date(timeIntervalSince1970: 2_000)
+        let live = Self.snapshot(fetchedAt: now, count: 5)
+        let reader = BlockingQuotaReader()
+        let sleeper = ControlledStoreSleeper()
+        let store = QuotaStore(
+            reader: reader,
+            cache: MemoryQuotaCache(snapshot: nil),
+            notifications: RecordingNotifications(),
+            now: { now },
+            sleep: { try await sleeper.sleep(seconds: $0) }
+        )
+
+        store.start()
+        await reader.waitUntilReadCount(1)
+        let manual = Task { await store.refresh() }
+        await Task<Never, Never>.yield()
+
+        #expect(await reader.readCount == 1)
+        await reader.resumeNext(returning: live)
+        await manual.value
+        await sleeper.waitUntilRequestCount(1)
+        #expect(store.state == .fresh(live))
+
+        await store.stop()
+    }
+
+    @Test
+    func testFailureMarksCacheStaleAtExactBoundaryAndRetainsValues() async {
+        let now = Date(timeIntervalSince1970: 5_000)
+        let old = Self.snapshot(fetchedAt: now.addingTimeInterval(-1_800), count: 5)
+        let store = QuotaStore(
+            reader: StubQuotaReader(result: .failure(TestStoreError.readFailed)),
+            cache: MemoryQuotaCache(snapshot: old),
+            notifications: RecordingNotifications(),
+            now: { now }
+        )
+
+        await store.loadCache()
+        await store.refresh()
+
+        guard case .stale(let snapshot, let message) = store.state else {
+            Issue.record("Expected stale state")
+            return
+        }
+        #expect(snapshot.availableResetCount == 5)
+        #expect(message == TestStoreError.readFailed.localizedDescription)
+    }
+
+    @Test
+    func testFailureBeforeStaleBoundaryKeepsFreshSnapshotAndSurfacesError() async {
+        let now = Date(timeIntervalSince1970: 5_000)
+        let recent = Self.snapshot(fetchedAt: now.addingTimeInterval(-1_799), count: 5)
+        let store = QuotaStore(
+            reader: StubQuotaReader(result: .failure(TestStoreError.readFailed)),
+            cache: MemoryQuotaCache(snapshot: recent),
+            notifications: RecordingNotifications(),
+            now: { now }
+        )
+
+        await store.loadCache()
+        await store.refresh()
+
+        #expect(store.state == .fresh(recent))
+        #expect(store.lastErrorMessage == TestStoreError.readFailed.localizedDescription)
+    }
+
+    @Test
+    func testFailureWithoutSnapshotBecomesUnavailable() async {
+        let store = QuotaStore(
+            reader: StubQuotaReader(result: .failure(TestStoreError.readFailed)),
+            cache: MemoryQuotaCache(snapshot: nil),
+            notifications: RecordingNotifications()
+        )
+
+        await store.refresh()
+
+        #expect(store.state == .unavailable(message: TestStoreError.readFailed.localizedDescription))
+        #expect(store.lastErrorMessage == TestStoreError.readFailed.localizedDescription)
+    }
+
+    @Test
+    func testCacheSaveFailureKeepsLiveDataFreshAndStillReconcilesNotifications() async {
+        let now = Date(timeIntervalSince1970: 5_000)
+        let live = Self.snapshot(fetchedAt: now, count: 5)
+        let notifications = RecordingNotifications()
+        let store = QuotaStore(
+            reader: StubQuotaReader(result: .success(live)),
+            cache: MemoryQuotaCache(snapshot: nil, failSaves: true),
+            notifications: notifications,
+            now: { now }
+        )
+
+        await store.refresh()
+
+        #expect(store.state == .fresh(live))
+        #expect(store.lastErrorMessage == TestStoreError.cacheSaveFailed.localizedDescription)
+        #expect(await notifications.snapshots == [live])
+    }
+
+    @Test
+    func testStopDuringReadShutsDownReaderAndPreventsCancellationErrorState() async {
+        let reader = ShutdownUnblockingQuotaReader()
+        let store = QuotaStore(
+            reader: reader,
+            cache: MemoryQuotaCache(snapshot: nil),
+            notifications: RecordingNotifications()
+        )
+
+        store.start()
+        await reader.waitUntilReadStarts()
+        await store.stop()
+
+        #expect(await reader.shutdownCount == 1)
+        #expect(store.state == .loading)
+        #expect(store.lastErrorMessage == nil)
+        #expect(!store.isRefreshing)
+    }
+
+    @Test
+    func testStopDuringSleepIsAwaitedIdempotentAndPreventsAnotherRead() async {
+        let now = Date(timeIntervalSince1970: 5_000)
+        let reader = SequenceQuotaReader(snapshots: [Self.snapshot(fetchedAt: now, count: 1)])
+        let sleeper = ControlledStoreSleeper()
+        let store = QuotaStore(
+            reader: reader,
+            cache: MemoryQuotaCache(snapshot: nil),
+            notifications: RecordingNotifications(),
+            now: { now },
+            sleep: { try await sleeper.sleep(seconds: $0) }
+        )
+
+        store.start()
+        await sleeper.waitUntilRequestCount(1)
+        await store.stop()
+        await store.stop()
+
+        #expect(await sleeper.cancellationCount == 1)
+        #expect(await reader.readCount == 1)
+        #expect(await reader.shutdownCount == 1)
+        #expect(!store.isRefreshing)
+    }
+
+    @Test
+    func testStoppedStoreCanRestartWithFreshLoopAndReaderGeneration() async {
+        let now = Date(timeIntervalSince1970: 5_000)
+        let first = Self.snapshot(fetchedAt: now, count: 1)
+        let second = Self.snapshot(fetchedAt: now.addingTimeInterval(1), count: 2)
+        let reader = SequenceQuotaReader(snapshots: [first, second])
+        let sleeper = ControlledStoreSleeper()
+        let store = QuotaStore(
+            reader: reader,
+            cache: MemoryQuotaCache(snapshot: nil),
+            notifications: RecordingNotifications(),
+            now: { now },
+            sleep: { try await sleeper.sleep(seconds: $0) }
+        )
+
+        store.start()
+        await sleeper.waitUntilRequestCount(1)
+        #expect(store.state == .fresh(first))
+        await store.stop()
+
+        store.start()
+        await sleeper.waitUntilRequestCount(2)
+        #expect(store.state == .fresh(second))
+        #expect(await reader.readCount == 2)
+        #expect(await reader.shutdownCount == 1)
+
+        await store.stop()
+        #expect(await reader.shutdownCount == 2)
+    }
+
+    @Test
+    func testStopAwaitsOldReadAndOldGenerationCannotMutateRestartedState() async {
+        let now = Date(timeIntervalSince1970: 5_000)
+        let old = Self.snapshot(fetchedAt: now, count: 1)
+        let live = Self.snapshot(fetchedAt: now.addingTimeInterval(1), count: 9)
+        let reader = OldGenerationQuotaReader(nextGenerationSnapshot: live)
+        let sleeper = ControlledStoreSleeper()
+        let completion = CompletionProbe()
+        let store = QuotaStore(
+            reader: reader,
+            cache: MemoryQuotaCache(snapshot: nil),
+            notifications: RecordingNotifications(),
+            now: { now },
+            sleep: { try await sleeper.sleep(seconds: $0) }
+        )
+
+        store.start()
+        await reader.waitUntilFirstReadStarts()
+        let stop = Task {
+            await store.stop()
+            await completion.markFinished()
+        }
+        await reader.waitUntilShutdownCount(1)
+        await Task<Never, Never>.yield()
+        #expect(!(await completion.isFinished))
+
+        await reader.resumeFirst(returning: old)
+        await stop.value
+        #expect(store.state == .loading)
+
+        store.start()
+        await sleeper.waitUntilRequestCount(1)
+        #expect(store.state == .fresh(live))
+        #expect(await reader.readCount == 2)
+
+        await store.stop()
+    }
+
+    @Test
+    func testNotificationSettingUpdatesPermissionWithoutChangingQuotaState() async {
+        let now = Date(timeIntervalSince1970: 5_000)
+        let live = Self.snapshot(fetchedAt: now, count: 5)
+        let notifications = RecordingNotifications(permission: .denied)
+        let store = QuotaStore(
+            reader: StubQuotaReader(result: .success(live)),
+            cache: MemoryQuotaCache(snapshot: live),
+            notifications: notifications,
+            now: { now }
+        )
+
+        await store.loadCache()
+        await store.setNotificationsEnabled(false)
+
+        #expect(!store.notificationsEnabled)
+        #expect(store.notificationPermission == .denied)
+        #expect(store.state == .fresh(live))
+        #expect(await notifications.enabledValues == [false])
+    }
+
+    @Test
+    func testUrgencyIncludesExactFutureDayAndExcludesExpiredNonexpiringAndFarFuture() {
+        let now = Date(timeIntervalSince1970: 5_000)
+
+        #expect(ResetCreditUrgency.isUrgent(expiresAt: now.addingTimeInterval(1), now: now))
+        #expect(ResetCreditUrgency.isUrgent(expiresAt: now.addingTimeInterval(86_400), now: now))
+        #expect(!ResetCreditUrgency.isUrgent(expiresAt: now, now: now))
+        #expect(!ResetCreditUrgency.isUrgent(expiresAt: now.addingTimeInterval(-1), now: now))
+        #expect(!ResetCreditUrgency.isUrgent(expiresAt: nil, now: now))
+        #expect(!ResetCreditUrgency.isUrgent(expiresAt: now.addingTimeInterval(86_401), now: now))
+    }
+
+    private static func snapshot(fetchedAt: Date, count: Int) -> QuotaSnapshot {
+        QuotaSnapshot(
+            windows: [
+                QuotaWindow(
+                    id: "weekly",
+                    label: "每周额度",
+                    usedPercent: 53,
+                    durationMinutes: 10_080,
+                    resetsAt: nil
+                )
+            ],
+            availableResetCount: count,
+            resetCredits: [],
+            fetchedAt: fetchedAt
+        )
+    }
+}
+
+private enum TestStoreError: LocalizedError {
+    case readFailed
+    case cacheSaveFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .readFailed: "read failed"
+        case .cacheSaveFailed: "cache save failed"
+        }
+    }
+}
+
+private actor StubQuotaReader: QuotaReading {
+    let result: Result<QuotaSnapshot, TestStoreError>
+    private(set) var shutdownCount = 0
+
+    init(result: Result<QuotaSnapshot, TestStoreError>) {
+        self.result = result
+    }
+
+    func read() async throws -> QuotaSnapshot {
+        try result.get()
+    }
+
+    func shutdown() async {
+        shutdownCount += 1
+    }
+}
+
+private actor SequenceQuotaReader: QuotaReading {
+    private var snapshots: [QuotaSnapshot]
+    private(set) var readCount = 0
+    private(set) var shutdownCount = 0
+
+    init(snapshots: [QuotaSnapshot]) {
+        self.snapshots = snapshots
+    }
+
+    func read() async throws -> QuotaSnapshot {
+        readCount += 1
+        guard !snapshots.isEmpty else { throw TestStoreError.readFailed }
+        return snapshots.removeFirst()
+    }
+
+    func shutdown() async {
+        shutdownCount += 1
+    }
+}
+
+private actor BlockingQuotaReader: QuotaReading {
+    private var continuations: [CheckedContinuation<QuotaSnapshot, any Error>] = []
+    private var readWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private(set) var readCount = 0
+
+    func read() async throws -> QuotaSnapshot {
+        readCount += 1
+        resumeReadWaiters()
+        return try await withCheckedThrowingContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func shutdown() async {}
+
+    func waitUntilReadCount(_ target: Int) async {
+        guard readCount < target else { return }
+        await withCheckedContinuation { continuation in
+            readWaiters.append((target, continuation))
+        }
+    }
+
+    func resumeNext(returning snapshot: QuotaSnapshot) {
+        guard !continuations.isEmpty else { return }
+        continuations.removeFirst().resume(returning: snapshot)
+    }
+
+    private func resumeReadWaiters() {
+        let ready = readWaiters.filter { $0.0 <= readCount }
+        readWaiters.removeAll { $0.0 <= readCount }
+        ready.forEach { $0.1.resume() }
+    }
+}
+
+private actor ShutdownUnblockingQuotaReader: QuotaReading {
+    private var continuation: CheckedContinuation<QuotaSnapshot, any Error>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var readStarted = false
+    private(set) var shutdownCount = 0
+
+    func read() async throws -> QuotaSnapshot {
+        try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+            readStarted = true
+            let waiters = startWaiters
+            startWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+    }
+
+    func shutdown() async {
+        shutdownCount += 1
+        let continuation = continuation
+        self.continuation = nil
+        continuation?.resume(throwing: CancellationError())
+    }
+
+    func waitUntilReadStarts() async {
+        guard !readStarted else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+}
+
+private actor OldGenerationQuotaReader: QuotaReading {
+    private let nextGenerationSnapshot: QuotaSnapshot
+    private var firstContinuation: CheckedContinuation<QuotaSnapshot, any Error>?
+    private var firstReadWaiters: [CheckedContinuation<Void, Never>] = []
+    private var shutdownWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private(set) var readCount = 0
+    private(set) var shutdownCount = 0
+
+    init(nextGenerationSnapshot: QuotaSnapshot) {
+        self.nextGenerationSnapshot = nextGenerationSnapshot
+    }
+
+    func read() async throws -> QuotaSnapshot {
+        readCount += 1
+        if readCount == 1 {
+            return try await withCheckedThrowingContinuation { continuation in
+                firstContinuation = continuation
+                let waiters = firstReadWaiters
+                firstReadWaiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+        }
+        return nextGenerationSnapshot
+    }
+
+    func shutdown() async {
+        shutdownCount += 1
+        let ready = shutdownWaiters.filter { $0.0 <= shutdownCount }
+        shutdownWaiters.removeAll { $0.0 <= shutdownCount }
+        ready.forEach { $0.1.resume() }
+    }
+
+    func waitUntilFirstReadStarts() async {
+        guard firstContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            firstReadWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilShutdownCount(_ target: Int) async {
+        guard shutdownCount < target else { return }
+        await withCheckedContinuation { continuation in
+            shutdownWaiters.append((target, continuation))
+        }
+    }
+
+    func resumeFirst(returning snapshot: QuotaSnapshot) {
+        let continuation = firstContinuation
+        firstContinuation = nil
+        continuation?.resume(returning: snapshot)
+    }
+}
+
+private actor MemoryQuotaCache: QuotaCaching {
+    private var snapshot: QuotaSnapshot?
+    private let failSaves: Bool
+
+    init(snapshot: QuotaSnapshot?, failSaves: Bool = false) {
+        self.snapshot = snapshot
+        self.failSaves = failSaves
+    }
+
+    func load() async -> QuotaSnapshot? {
+        snapshot
+    }
+
+    func save(_ snapshot: QuotaSnapshot) async throws {
+        guard !failSaves else { throw TestStoreError.cacheSaveFailed }
+        self.snapshot = snapshot
+    }
+}
+
+private actor RecordingNotifications: ExpiryNotificationReconciling {
+    private(set) var snapshots: [QuotaSnapshot] = []
+    private(set) var enabledValues: [Bool] = []
+    private var enabled = true
+    private let permission: NotificationPermissionState
+
+    init(permission: NotificationPermissionState = .authorized) {
+        self.permission = permission
+    }
+
+    func requestAuthorization() async {}
+
+    func reconcile(snapshot: QuotaSnapshot, now: Date) async {
+        snapshots.append(snapshot)
+    }
+
+    func setEnabled(_ enabled: Bool) async {
+        self.enabled = enabled
+        enabledValues.append(enabled)
+    }
+
+    func isEnabled() async -> Bool {
+        enabled
+    }
+
+    func permissionState() async -> NotificationPermissionState {
+        permission
+    }
+}
+
+private actor ControlledStoreSleeper {
+    private var continuations: [UUID: CheckedContinuation<Void, any Error>] = [:]
+    private var continuationOrder: [UUID] = []
+    private var cancelled: Set<UUID> = []
+    private var requestWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private(set) var requestedSeconds: [TimeInterval] = []
+    private(set) var cancellationCount = 0
+
+    func sleep(seconds: TimeInterval) async throws {
+        let id = UUID()
+        requestedSeconds.append(seconds)
+        resumeRequestWaiters()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, any Error>) in
+                if Task.isCancelled || cancelled.remove(id) != nil {
+                    cancellationCount += 1
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    continuations[id] = continuation
+                    continuationOrder.append(id)
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel(id: id) }
+        }
+    }
+
+    func waitUntilRequestCount(_ target: Int) async {
+        guard requestedSeconds.count < target else { return }
+        await withCheckedContinuation { continuation in
+            requestWaiters.append((target, continuation))
+        }
+    }
+
+    func resumeNext() {
+        guard !continuationOrder.isEmpty else { return }
+        let id = continuationOrder.removeFirst()
+        continuations.removeValue(forKey: id)?.resume()
+    }
+
+    private func cancel(id: UUID) {
+        continuationOrder.removeAll { $0 == id }
+        if let continuation = continuations.removeValue(forKey: id) {
+            cancellationCount += 1
+            continuation.resume(throwing: CancellationError())
+        } else {
+            cancelled.insert(id)
+        }
+    }
+
+    private func resumeRequestWaiters() {
+        let ready = requestWaiters.filter { $0.0 <= requestedSeconds.count }
+        requestWaiters.removeAll { $0.0 <= requestedSeconds.count }
+        ready.forEach { $0.1.resume() }
+    }
+}
+
+private actor CompletionProbe {
+    private(set) var isFinished = false
+
+    func markFinished() {
+        isFinished = true
+    }
+}

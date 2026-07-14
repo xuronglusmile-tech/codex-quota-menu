@@ -1,0 +1,195 @@
+import AppKit
+import SwiftUI
+
+enum ResetCreditUrgency {
+    static let thresholdSeconds: TimeInterval = 86_400
+
+    static func isUrgent(expiresAt: Date?, now: Date) -> Bool {
+        guard let expiresAt else { return false }
+        let remaining = expiresAt.timeIntervalSince(now)
+        return remaining > 0 && remaining <= thresholdSeconds
+    }
+}
+
+struct MenuBarContentView: View {
+    @ObservedObject var store: QuotaStore
+    private let now: @Sendable () -> Date
+
+    init(
+        store: QuotaStore,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
+        self.store = store
+        self.now = now
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header
+            quotaContent
+            statusContent
+            Divider()
+            notificationControls
+            footer
+        }
+        .padding(14)
+        .frame(width: 330)
+    }
+
+    private var header: some View {
+        HStack {
+            Text("Codex 额度")
+                .font(.headline)
+            Spacer()
+            if store.isRefreshing {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            Button {
+                Task { await store.refresh() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.plain)
+            .disabled(store.isRefreshing)
+            .accessibilityLabel("刷新额度")
+        }
+    }
+
+    @ViewBuilder
+    private var quotaContent: some View {
+        if let snapshot = store.state.snapshot {
+            ForEach(snapshot.windows) { window in
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(window.label)
+                        Spacer()
+                        Text("\(window.remainingPercent)%")
+                            .bold()
+                    }
+                    ProgressView(
+                        value: Double(window.remainingPercent),
+                        total: 100
+                    )
+                    if let resetsAt = window.resetsAt {
+                        Text(
+                            "重置：\(resetsAt.formatted(date: .abbreviated, time: .shortened))"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Divider()
+            HStack {
+                Text("可用重置次数")
+                Spacer()
+                Text("\(snapshot.availableResetCount)")
+                    .font(.title2)
+                    .bold()
+            }
+            resetCredits(snapshot.resetCredits)
+
+            Text(
+                "最后更新：\(snapshot.fetchedAt.formatted(date: .omitted, time: .shortened))"
+            )
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        } else {
+            Text(store.lastErrorMessage ?? "正在读取额度…")
+                .foregroundStyle(.secondary)
+            if case .unavailable = store.state {
+                Button("重新检测") {
+                    Task { await store.refresh() }
+                }
+                .disabled(store.isRefreshing)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func resetCredits(_ credits: [ResetCredit]?) -> some View {
+        if let credits {
+            ForEach(credits) { credit in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text(credit.title ?? "Full reset")
+                        Spacer()
+                        Text(
+                            credit.expiresAt?.formatted(
+                                date: .abbreviated,
+                                time: .shortened
+                            ) ?? "不过期"
+                        )
+                        .foregroundStyle(
+                            ResetCreditUrgency.isUrgent(
+                                expiresAt: credit.expiresAt,
+                                now: now()
+                            ) ? .orange : .secondary
+                        )
+                    }
+                    if let detail = credit.detail, !detail.isEmpty {
+                        Text(detail)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .font(.caption)
+            }
+        } else {
+            Text("到期详情暂不可用")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var statusContent: some View {
+        if case .stale(_, let message) = store.state {
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .font(.caption)
+        } else if let message = store.lastErrorMessage,
+                  store.state.snapshot != nil {
+            Text(message)
+                .foregroundStyle(.secondary)
+                .font(.caption)
+        }
+    }
+
+    private var notificationControls: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(
+                "重置额度到期提醒",
+                isOn: Binding(
+                    get: { store.notificationsEnabled },
+                    set: { enabled in
+                        Task { await store.setNotificationsEnabled(enabled) }
+                    }
+                )
+            )
+            if store.notificationPermission == .denied {
+                Text("通知权限已关闭，请在系统设置中启用。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack {
+            Button("打开 ChatGPT") {
+                NSWorkspace.shared.open(
+                    URL(fileURLWithPath: "/Applications/ChatGPT.app")
+                )
+            }
+            Spacer()
+            Button("退出") {
+                Task {
+                    await store.stop()
+                    NSApplication.shared.terminate(nil)
+                }
+            }
+        }
+    }
+}
