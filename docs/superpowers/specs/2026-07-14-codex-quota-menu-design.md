@@ -322,7 +322,9 @@ struct ResetCredit: Codable, Equatable, Identifiable {
 
 ## 12. 构建与交付
 
-- 使用 Xcode 原生 macOS App 工程、SwiftUI、Swift Concurrency 和 XCTest。
+- 使用 Swift Package Manager 管理原生 macOS 可执行目标，使用 SwiftUI、Swift Concurrency 和 XCTest。
+- 通过 macOS Command Line Tools 的 `swift build` 编译，不要求安装完整 Xcode。
+- 使用可复现的本地脚本把 release 可执行文件、`Info.plist` 和资源组装成标准 `.app` bundle。
 - Bundle ID 使用 `local.scott.CodexQuotaMenu`。
 - 个人构建采用本地或 ad-hoc 签名，不进行公证。
 - 成品复制到 `/Applications/Codex Quota Menu.app` 后完成首次启动和通知授权。
