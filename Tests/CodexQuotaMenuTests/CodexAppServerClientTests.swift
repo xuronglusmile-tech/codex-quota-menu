@@ -38,9 +38,13 @@ struct CodexAppServerClientTests {
     func testSkipsInterleavedNotificationsAndResponsesWithOtherIDs() async throws {
         let transport = ScriptedJSONLineTransport(lines: [
             #"{"method":"account/rateLimits/updated","params":{}}"#,
+            #"{"id":"initialize-other","result":{}}"#,
+            #"{"id":0.5,"result":{}}"#,
             #"{"id":99,"result":{}}"#,
             #"{"id":0,"result":{"userAgent":"test"}}"#,
             #"{"method":"account/rateLimits/updated","params":{}}"#,
+            #"{"id":"read-other","result":{}}"#,
+            #"{"id":1.5,"result":{}}"#,
             #"{"id":0,"result":{"userAgent":"late"}}"#,
             Self.rateLimitsResponse(resetCount: 7)
         ])
@@ -78,7 +82,7 @@ struct CodexAppServerClientTests {
 
     @Test
     func testMalformedMatchingResponseFailsAfterExactlyOneRetry() async {
-        let first = ScriptedJSONLineTransport(lines: [#"{"id":0}"#])
+        let first = ScriptedJSONLineTransport(lines: ["not-json"])
         let second = ScriptedJSONLineTransport(lines: [#"{"id":0,"result":null}"#])
         let queue = TransportQueue([first, second])
         let client = CodexAppServerClient(makeTransport: { queue.next() }, timeoutSeconds: 1)
@@ -244,6 +248,105 @@ struct CodexAppServerClientTests {
         ])
     }
 
+    @Test
+    func testStopDuringInitializePreventsAReadFromResurrectingTransport() async {
+        let stopping = StopSuspendingTransport(blocksStart: true, lines: [])
+        let resurrected = ScriptedJSONLineTransport(lines: Self.successLines(resetCount: 2))
+        let queue = TransportQueue([stopping, resurrected])
+        let client = CodexAppServerClient(makeTransport: { queue.next() }, timeoutSeconds: 1)
+
+        let initializing = Task { try await client.readRateLimits() }
+        await stopping.waitUntilStartEntered()
+        let stop = Task { await client.stop() }
+        await stopping.waitUntilStopStarted()
+
+        Self.expectCancellation(await initializing.result)
+        let readDuringStop = await Task { try await client.readRateLimits() }.result
+
+        Self.expectCancellation(readDuringStop)
+        #expect(queue.makeCount == 1)
+        await stopping.releaseStop()
+        await stop.value
+    }
+
+    @Test
+    func testStopDuringReadPreventsAReadFromResurrectingTransport() async {
+        let stopping = StopSuspendingTransport(
+            blocksStart: false,
+            lines: [#"{"id":0,"result":{"userAgent":"test"}}"#]
+        )
+        let resurrected = ScriptedJSONLineTransport(lines: Self.successLines(resetCount: 2))
+        let queue = TransportQueue([stopping, resurrected])
+        let client = CodexAppServerClient(makeTransport: { queue.next() }, timeoutSeconds: 1)
+
+        let reading = Task { try await client.readRateLimits() }
+        await stopping.waitUntilReceiveCount(2)
+        let stop = Task { await client.stop() }
+        await stopping.waitUntilStopStarted()
+
+        Self.expectCancellation(await reading.result)
+        let readDuringStop = await Task { try await client.readRateLimits() }.result
+
+        Self.expectCancellation(readDuringStop)
+        #expect(queue.makeCount == 1)
+        await stopping.releaseStop()
+        await stop.value
+    }
+
+    @Test
+    func testReadEnteringDuringStopFailsWithoutLaunchingTransport() async throws {
+        let stopping = StopSuspendingTransport(
+            blocksStart: false,
+            lines: Self.successLines(resetCount: 1)
+        )
+        let resurrected = ScriptedJSONLineTransport(lines: Self.successLines(resetCount: 2))
+        let queue = TransportQueue([stopping, resurrected])
+        let client = CodexAppServerClient(makeTransport: { queue.next() }, timeoutSeconds: 1)
+        _ = try await client.readRateLimits()
+
+        let stop = Task { await client.stop() }
+        await stopping.waitUntilStopStarted()
+        let readDuringStop = await Task { try await client.readRateLimits() }.result
+
+        Self.expectCancellation(readDuringStop)
+        #expect(queue.makeCount == 1)
+        await stopping.releaseStop()
+        await stop.value
+    }
+
+    @Test
+    func testTimeoutThatAwakensAfterResponseLosesWithoutStoppingHealthyTransport() async throws {
+        let transport = StopAwareScriptedTransport(lines: [
+            #"{"id":0,"result":{"userAgent":"test"}}"#,
+            Self.rateLimitsResponse(resetCount: 4),
+            Self.rateLimitsResponse(resetCount: 5)
+        ])
+        let queue = TransportQueue([transport])
+        let sleeper = CancellationReturningSleeper()
+        let client = CodexAppServerClient(
+            makeTransport: { queue.next() },
+            timeoutSeconds: 1,
+            timeoutSleep: { duration in
+                await sleeper.waitUntilCancelled(after: duration)
+            }
+        )
+
+        let first = try await client.readRateLimits()
+        let second = try await client.readRateLimits()
+
+        #expect(first.rateLimitResetCredits?.availableCount == 4)
+        #expect(second.rateLimitResetCredits?.availableCount == 5)
+        #expect(queue.makeCount == 1)
+        #expect(await transport.stopCount == 0)
+        #expect(await sleeper.returnCount == 3)
+        #expect(await transport.sentLines.compactMap(Self.decodeMethod) == [
+            "initialize",
+            "initialized",
+            "account/rateLimits/read",
+            "account/rateLimits/read"
+        ])
+    }
+
     private static func successLines(resetCount: Int) -> [String] {
         [
             #"{"id":0,"result":{"userAgent":"test"}}"#,
@@ -271,6 +374,18 @@ struct CodexAppServerClientTests {
             let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
         else { return nil }
         return object["method"] as? String
+    }
+
+    private static func expectCancellation(
+        _ result: Result<RateLimitsReadResponse, any Error>,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        switch result {
+        case .success:
+            Issue.record("Expected cancellation", sourceLocation: sourceLocation)
+        case .failure(let error):
+            #expect(error is CancellationError, sourceLocation: sourceLocation)
+        }
     }
 }
 
@@ -389,6 +504,179 @@ private actor ControllableJSONLineTransport: JSONLineTransport {
         let satisfied = countWaiters.filter { $0.target <= receiveCount }
         countWaiters.removeAll { $0.target <= receiveCount }
         satisfied.forEach { $0.continuation.resume() }
+    }
+}
+
+private actor StopSuspendingTransport: JSONLineTransport {
+    private struct CountWaiter {
+        let target: Int
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
+    private let blocksStart: Bool
+    private var lines: [String]
+    private var receivers: [CheckedContinuation<String, any Error>] = []
+    private var receiveCount = 0
+    private var receiveWaiters: [CountWaiter] = []
+    private var startEntered = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var startContinuation: CheckedContinuation<Void, Never>?
+    private var stopStarted = false
+    private var stopWaiters: [CheckedContinuation<Void, Never>] = []
+    private var stopContinuation: CheckedContinuation<Void, Never>?
+    private var stopReleased = false
+    private var stopCount = 0
+    private var didStop = false
+
+    init(blocksStart: Bool, lines: [String]) {
+        self.blocksStart = blocksStart
+        self.lines = lines
+    }
+
+    func start() async throws {
+        startEntered = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+
+        if blocksStart && !didStop {
+            await withCheckedContinuation { continuation in
+                startContinuation = continuation
+            }
+        }
+        guard !didStop else { throw JSONLineTransportError.closed }
+    }
+
+    func send(_ line: String) async throws {
+        guard !didStop else { throw JSONLineTransportError.closed }
+    }
+
+    func receive() async throws -> String {
+        receiveCount += 1
+        resumeSatisfiedReceiveWaiters()
+        guard !didStop else { throw JSONLineTransportError.closed }
+        if !lines.isEmpty {
+            return lines.removeFirst()
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            receivers.append(continuation)
+        }
+    }
+
+    func stop() async {
+        stopCount += 1
+        guard stopCount == 1 else { return }
+
+        didStop = true
+        startContinuation?.resume()
+        startContinuation = nil
+        let pendingReceivers = receivers
+        receivers.removeAll()
+        pendingReceivers.forEach { $0.resume(throwing: JSONLineTransportError.closed) }
+
+        stopStarted = true
+        let waiters = stopWaiters
+        stopWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+
+        guard !stopReleased else { return }
+        await withCheckedContinuation { continuation in
+            stopContinuation = continuation
+        }
+    }
+
+    func waitUntilStartEntered() async {
+        guard !startEntered else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilReceiveCount(_ target: Int) async {
+        guard receiveCount < target else { return }
+        await withCheckedContinuation { continuation in
+            receiveWaiters.append(CountWaiter(target: target, continuation: continuation))
+        }
+    }
+
+    func waitUntilStopStarted() async {
+        guard !stopStarted else { return }
+        await withCheckedContinuation { continuation in
+            stopWaiters.append(continuation)
+        }
+    }
+
+    func releaseStop() {
+        stopReleased = true
+        stopContinuation?.resume()
+        stopContinuation = nil
+    }
+
+    private func resumeSatisfiedReceiveWaiters() {
+        let satisfied = receiveWaiters.filter { $0.target <= receiveCount }
+        receiveWaiters.removeAll { $0.target <= receiveCount }
+        satisfied.forEach { $0.continuation.resume() }
+    }
+}
+
+private actor StopAwareScriptedTransport: JSONLineTransport {
+    private var lines: [String]
+    private var stopped = false
+    private(set) var sentLines: [String] = []
+    private(set) var stopCount = 0
+
+    init(lines: [String]) {
+        self.lines = lines
+    }
+
+    func start() async throws {
+        guard !stopped else { throw JSONLineTransportError.closed }
+    }
+
+    func send(_ line: String) async throws {
+        guard !stopped else { throw JSONLineTransportError.closed }
+        sentLines.append(line)
+    }
+
+    func receive() async throws -> String {
+        guard !stopped, !lines.isEmpty else { throw JSONLineTransportError.closed }
+        return lines.removeFirst()
+    }
+
+    func stop() async {
+        stopCount += 1
+        stopped = true
+    }
+}
+
+private actor CancellationReturningSleeper {
+    private var continuations: [UUID: CheckedContinuation<Void, Never>] = [:]
+    private var cancelled: Set<UUID> = []
+    private(set) var returnCount = 0
+
+    func waitUntilCancelled(after duration: Duration) async {
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled || cancelled.remove(id) != nil {
+                    returnCount += 1
+                    continuation.resume()
+                } else {
+                    continuations[id] = continuation
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel(id: id) }
+        }
+    }
+
+    private func cancel(id: UUID) {
+        if let continuation = continuations.removeValue(forKey: id) {
+            returnCount += 1
+            continuation.resume()
+        } else {
+            cancelled.insert(id)
+        }
     }
 }
 
