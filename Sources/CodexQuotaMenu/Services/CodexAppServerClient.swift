@@ -131,7 +131,7 @@ actor CodexAppServerClient: RateLimitsReading {
     }
 
     private let makeTransport: @Sendable () -> any JSONLineTransport
-    private let timeoutSeconds: TimeInterval
+    private let timeoutDuration: Duration
     private let timeoutSleep: @Sendable (Duration) async throws -> Void
     private var lifecycle: LifecycleState = .active(generation: 0)
     private var transport: OwnedTransport?
@@ -146,7 +146,7 @@ actor CodexAppServerClient: RateLimitsReading {
         }
     ) {
         self.makeTransport = makeTransport
-        self.timeoutSeconds = timeoutSeconds.isFinite && timeoutSeconds > 0 ? timeoutSeconds : 0
+        self.timeoutDuration = Self.normalizedTimeoutDuration(seconds: timeoutSeconds)
         self.timeoutSleep = timeoutSleep
     }
 
@@ -326,9 +326,9 @@ actor CodexAppServerClient: RateLimitsReading {
                     return won ? .success(result) : .loser
                 }
             }
-            group.addTask { [timeoutSeconds, timeoutSleep] in
+            group.addTask { [timeoutDuration, timeoutSleep] in
                 do {
-                    try await timeoutSleep(.seconds(timeoutSeconds))
+                    try await timeoutSleep(timeoutDuration)
                 } catch {
                     return .loser
                 }
@@ -351,6 +351,24 @@ actor CodexAppServerClient: RateLimitsReading {
             }
             throw AppServerClientError.malformedResponse
         }
+    }
+
+    private static func normalizedTimeoutDuration(seconds: TimeInterval) -> Duration {
+        guard seconds.isFinite, seconds > 0 else { return .zero }
+
+        let wholeSeconds = seconds.rounded(.down)
+        guard wholeSeconds < Double(Int64.max) else { return .zero }
+
+        let fractionalSeconds = seconds - wholeSeconds
+        let attoseconds = (fractionalSeconds * 1_000_000_000_000_000_000).rounded(.down)
+        guard attoseconds.isFinite,
+              attoseconds >= 0,
+              attoseconds <= Double(Int64.max) else { return .zero }
+
+        return Duration(
+            secondsComponent: Int64(wholeSeconds),
+            attosecondsComponent: Int64(attoseconds)
+        )
     }
 
     private func ensureActive(generation: UInt64) throws {

@@ -194,6 +194,38 @@ struct CodexAppServerClientTests {
     }
 
     @Test
+    func testExtremeFiniteTimeoutBecomesAnImmediateBoundedTimeout() async {
+        let first = CancellationIgnoringTransport()
+        let second = CancellationIgnoringTransport()
+        let queue = TransportQueue([first, second])
+        let client = CodexAppServerClient(
+            makeTransport: { queue.next() },
+            timeoutSeconds: Double.greatestFiniteMagnitude
+        )
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+
+        do {
+            _ = try await client.readRateLimits()
+            Issue.record("Expected timeout")
+        } catch let error as AppServerClientError {
+            guard case .timeout = error else {
+                Issue.record("Expected timeout, got \(error)")
+                return
+            }
+        } catch {
+            Issue.record("Expected AppServerClientError.timeout, got \(error)")
+        }
+
+        #expect(startedAt.duration(to: clock.now) < .milliseconds(500))
+        #expect(queue.makeCount == 2)
+        #expect(await first.didStop)
+        #expect(await second.didStop)
+        #expect(await first.receiveCount == 1)
+        #expect(await second.receiveCount == 1)
+    }
+
+    @Test
     func testConcurrentReadsShareOneHandshakeAndOneRead() async throws {
         let transport = ControllableJSONLineTransport()
         let queue = TransportQueue([transport])
@@ -345,6 +377,47 @@ struct CodexAppServerClientTests {
             "account/rateLimits/read",
             "account/rateLimits/read"
         ])
+    }
+
+    @Test
+    func testConcurrentStopsAwaitOneCleanupBeforeNextGenerationStarts() async throws {
+        let stopping = StopSuspendingTransport(
+            blocksStart: false,
+            lines: [#"{"id":0,"result":{"userAgent":"test"}}"#]
+        )
+        let fresh = ScriptedJSONLineTransport(lines: Self.successLines(resetCount: 2))
+        let queue = TransportQueue([stopping, fresh])
+        let client = CodexAppServerClient(makeTransport: { queue.next() }, timeoutSeconds: 1)
+        let reading = Task { try await client.readRateLimits() }
+        await stopping.waitUntilReceiveCount(2)
+
+        let firstStop = Task { await client.stop() }
+        await stopping.waitUntilStopStarted()
+        let secondProbe = StopCallProbe()
+        let secondStop = Task {
+            await secondProbe.markStarted()
+            await client.stop()
+            await secondProbe.markFinished()
+        }
+        await secondProbe.waitUntilStarted()
+        Self.expectCancellation(await reading.result)
+        for _ in 0..<20 {
+            await Task<Never, Never>.yield()
+        }
+
+        #expect(!(await secondProbe.isFinished))
+        #expect(await stopping.stopCount == 1)
+        #expect(queue.makeCount == 1)
+
+        await stopping.releaseStop()
+        await firstStop.value
+        await secondStop.value
+
+        #expect(await secondProbe.isFinished)
+        #expect(await stopping.stopCount == 1)
+        let result = try await client.readRateLimits()
+        #expect(result.rateLimitResetCredits?.availableCount == 2)
+        #expect(queue.makeCount == 2)
     }
 
     private static func successLines(resetCount: Int) -> [String] {
@@ -525,7 +598,7 @@ private actor StopSuspendingTransport: JSONLineTransport {
     private var stopWaiters: [CheckedContinuation<Void, Never>] = []
     private var stopContinuation: CheckedContinuation<Void, Never>?
     private var stopReleased = false
-    private var stopCount = 0
+    private(set) var stopCount = 0
     private var didStop = false
 
     init(blocksStart: Bool, lines: [String]) {
@@ -677,6 +750,30 @@ private actor CancellationReturningSleeper {
         } else {
             cancelled.insert(id)
         }
+    }
+}
+
+private actor StopCallProbe {
+    private var started = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var isFinished = false
+
+    func markStarted() {
+        started = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func markFinished() {
+        isFinished = true
     }
 }
 
