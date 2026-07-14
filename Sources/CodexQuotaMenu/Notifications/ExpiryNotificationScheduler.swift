@@ -7,32 +7,68 @@ struct ExpiryNotificationPlan: Equatable, Sendable {
     let expiresAt: Date
 }
 
+enum ExpiryNotificationIdentifier {
+    static let prefix = "codex-reset-"
+
+    static func make(anonymousCreditKey: String) -> String? {
+        guard isLowercaseSHA256Hex(anonymousCreditKey) else { return nil }
+        return "\(prefix)\(anonymousCreditKey)"
+    }
+
+    static func isValid(_ identifier: String) -> Bool {
+        guard identifier.hasPrefix(prefix) else { return false }
+        return isLowercaseSHA256Hex(String(identifier.dropFirst(prefix.count)))
+    }
+
+    static func isOwned(_ identifier: String) -> Bool {
+        identifier.hasPrefix(prefix)
+    }
+
+    private static func isLowercaseSHA256Hex(_ value: String) -> Bool {
+        guard value.utf8.count == 64 else { return false }
+        return value.utf8.allSatisfy { byte in
+            (48...57).contains(byte) || (97...102).contains(byte)
+        }
+    }
+}
+
 enum ExpiryNotificationPlanner {
-    static let identifierPrefix = "codex-reset-"
+    static let identifierPrefix = ExpiryNotificationIdentifier.prefix
 
     static func plans(for snapshot: QuotaSnapshot, now: Date) -> [ExpiryNotificationPlan] {
-        var plannedIdentifiers = Set<String>()
-
-        return (snapshot.resetCredits ?? []).compactMap { credit in
+        var earliestExpirationByIdentifier: [String: Date] = [:]
+        for credit in snapshot.resetCredits ?? [] {
             guard
                 credit.status == .available,
                 let expiresAt = credit.expiresAt,
-                expiresAt > now
+                expiresAt > now,
+                let identifier = ExpiryNotificationIdentifier.make(
+                    anonymousCreditKey: credit.id
+                )
             else {
-                return nil
+                continue
             }
 
-            let identifier = "\(identifierPrefix)\(credit.id)"
-            guard plannedIdentifiers.insert(identifier).inserted else { return nil }
+            // A conflicting duplicate is malformed input; the earliest expiry is the
+            // safest canonical choice and makes the result independent of input order.
+            if let existing = earliestExpirationByIdentifier[identifier], existing <= expiresAt {
+                continue
+            }
+            earliestExpirationByIdentifier[identifier] = expiresAt
+        }
 
+        return earliestExpirationByIdentifier.map { identifier, expiresAt in
+            let preferredFireAt = expiresAt.addingTimeInterval(-86_400)
             return ExpiryNotificationPlan(
                 identifier: identifier,
-                fireAt: max(
-                    expiresAt.addingTimeInterval(-86_400),
-                    now.addingTimeInterval(1)
-                ),
+                fireAt: preferredFireAt > now
+                    ? preferredFireAt
+                    : now.addingTimeInterval(1),
                 expiresAt: expiresAt
             )
+        }.sorted { lhs, rhs in
+            if lhs.fireAt != rhs.fireAt { return lhs.fireAt < rhs.fireAt }
+            return lhs.identifier < rhs.identifier
         }
     }
 }
@@ -55,7 +91,7 @@ struct ExpiryNotificationRequest: Equatable, Sendable {
     let identifier: String
     let title: String
     let body: String
-    let timeInterval: TimeInterval
+    let fireAt: Date
 }
 
 protocol UserNotificationCenterGateway: Sendable {
@@ -71,6 +107,18 @@ actor SystemUserNotificationCenterGateway: UserNotificationCenterGateway {
 
     init(center: UNUserNotificationCenter = .current()) {
         self.center = center
+    }
+
+    static func triggerDateComponents(for fireAt: Date) -> DateComponents {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        var components = calendar.dateComponents(
+            [.era, .year, .month, .day, .hour, .minute, .second, .nanosecond],
+            from: fireAt
+        )
+        components.calendar = calendar
+        components.timeZone = calendar.timeZone
+        return components
     }
 
     func permissionState() async throws -> NotificationPermissionState {
@@ -99,8 +147,8 @@ actor SystemUserNotificationCenterGateway: UserNotificationCenterGateway {
         content.title = request.title
         content.body = request.body
         content.sound = .default
-        let trigger = UNTimeIntervalNotificationTrigger(
-            timeInterval: max(request.timeInterval, 1),
+        let trigger = UNCalendarNotificationTrigger(
+            dateMatching: Self.triggerDateComponents(for: request.fireAt),
             repeats: false
         )
         try await center.add(
@@ -145,15 +193,13 @@ struct NotificationLedger {
     }
 
     private static func isPersistableIdentifier(_ identifier: String) -> Bool {
-        guard identifier.hasPrefix(ExpiryNotificationPlanner.identifierPrefix) else {
-            return false
-        }
-        let digest = identifier.dropFirst(ExpiryNotificationPlanner.identifierPrefix.count)
-        guard digest.utf8.count == 64 else { return false }
-        return digest.utf8.allSatisfy { byte in
-            (48...57).contains(byte) || (97...102).contains(byte)
-        }
+        ExpiryNotificationIdentifier.isValid(identifier)
     }
+}
+
+private struct MutationQueueDepthWaiter {
+    let minimumDepth: Int
+    let continuation: CheckedContinuation<Void, Never>
 }
 
 actor ExpiryNotificationScheduler: ExpiryNotificationReconciling {
@@ -162,6 +208,9 @@ actor ExpiryNotificationScheduler: ExpiryNotificationReconciling {
     private let gateway: any UserNotificationCenterGateway
     private let defaults: UserDefaults
     private let ledger: NotificationLedger
+    private var mutationInProgress = false
+    private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var mutationQueueDepthWaiters: [MutationQueueDepthWaiter] = []
 
     init(
         gateway: any UserNotificationCenterGateway = SystemUserNotificationCenterGateway(),
@@ -173,21 +222,60 @@ actor ExpiryNotificationScheduler: ExpiryNotificationReconciling {
     }
 
     func isEnabled() async -> Bool {
+        isEnabledUnlocked()
+    }
+
+    func setEnabled(_ enabled: Bool) async {
+        await acquireMutationOperation()
+        defer { releaseMutationOperation() }
+        await setEnabledUnlocked(enabled)
+    }
+
+    func requestAuthorization() async {
+        await acquireMutationOperation()
+        defer { releaseMutationOperation() }
+        await requestAuthorizationUnlocked()
+    }
+
+    func permissionState() async -> NotificationPermissionState {
+        await permissionStateUnlocked()
+    }
+
+    func reconcile(snapshot: QuotaSnapshot, now: Date) async {
+        await acquireMutationOperation()
+        defer { releaseMutationOperation() }
+        await reconcileUnlocked(snapshot: snapshot, now: now)
+    }
+
+    func waitUntilMutationQueueDepthForTesting(_ minimumDepth: Int) async {
+        precondition(minimumDepth >= 0)
+        guard mutationWaiters.count < minimumDepth else { return }
+        await withCheckedContinuation { continuation in
+            mutationQueueDepthWaiters.append(
+                MutationQueueDepthWaiter(
+                    minimumDepth: minimumDepth,
+                    continuation: continuation
+                )
+            )
+        }
+    }
+
+    private func isEnabledUnlocked() -> Bool {
         defaults.object(forKey: Self.enabledKey) == nil
             ? true
             : defaults.bool(forKey: Self.enabledKey)
     }
 
-    func setEnabled(_ enabled: Bool) async {
+    private func setEnabledUnlocked(_ enabled: Bool) async {
         defaults.set(enabled, forKey: Self.enabledKey)
         guard !enabled else {
-            await requestAuthorization()
+            await requestAuthorizationUnlocked()
             return
         }
 
         if let pending = try? await gateway.pendingRequestIdentifiers() {
             let owned = pending
-                .filter { $0.hasPrefix(ExpiryNotificationPlanner.identifierPrefix) }
+                .filter(ExpiryNotificationIdentifier.isOwned)
                 .sorted()
             if !owned.isEmpty {
                 try? await gateway.removePendingRequests(withIdentifiers: owned)
@@ -196,24 +284,24 @@ actor ExpiryNotificationScheduler: ExpiryNotificationReconciling {
         ledger.clear()
     }
 
-    func requestAuthorization() async {
-        guard await isEnabled() else { return }
+    private func requestAuthorizationUnlocked() async {
+        guard isEnabledUnlocked() else { return }
         _ = try? await gateway.requestAuthorization()
     }
 
-    func permissionState() async -> NotificationPermissionState {
+    private func permissionStateUnlocked() async -> NotificationPermissionState {
         (try? await gateway.permissionState()) ?? .unknown
     }
 
-    func reconcile(snapshot: QuotaSnapshot, now: Date) async {
-        guard await isEnabled() else { return }
+    private func reconcileUnlocked(snapshot: QuotaSnapshot, now: Date) async {
+        guard isEnabledUnlocked() else { return }
         let plans = ExpiryNotificationPlanner.plans(for: snapshot, now: now)
         let desired = Set(plans.map(\.identifier))
         guard let pending = try? await gateway.pendingRequestIdentifiers() else { return }
+        guard isEnabledUnlocked() else { return }
         let obsolete = pending
             .filter {
-                $0.hasPrefix(ExpiryNotificationPlanner.identifierPrefix)
-                    && !desired.contains($0)
+                ExpiryNotificationIdentifier.isOwned($0) && !desired.contains($0)
             }
             .sorted()
         if !obsolete.isEmpty {
@@ -221,16 +309,18 @@ actor ExpiryNotificationScheduler: ExpiryNotificationReconciling {
         }
 
         var notified = ledger.identifiers().intersection(desired)
-        guard await permissionState() == .authorized else {
+        guard await permissionStateUnlocked() == .authorized else {
             ledger.replace(with: notified)
             return
         }
+        guard isEnabledUnlocked() else { return }
 
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
 
         for plan in plans {
+            guard isEnabledUnlocked() else { return }
             guard !pending.contains(plan.identifier), !notified.contains(plan.identifier) else {
                 continue
             }
@@ -239,7 +329,7 @@ actor ExpiryNotificationScheduler: ExpiryNotificationReconciling {
                 identifier: plan.identifier,
                 title: "Codex 重置额度即将到期",
                 body: "一份重置额度将在 \(formatter.string(from: plan.expiresAt)) 到期。",
-                timeInterval: max(plan.fireAt.timeIntervalSince(now), 1)
+                fireAt: plan.fireAt
             )
             do {
                 try await gateway.add(request)
@@ -250,5 +340,37 @@ actor ExpiryNotificationScheduler: ExpiryNotificationReconciling {
         }
 
         ledger.replace(with: notified)
+    }
+
+    private func acquireMutationOperation() async {
+        guard mutationInProgress else {
+            mutationInProgress = true
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            mutationWaiters.append(continuation)
+            resumeSatisfiedMutationQueueDepthWaiters()
+        }
+    }
+
+    private func releaseMutationOperation() {
+        guard !mutationWaiters.isEmpty else {
+            mutationInProgress = false
+            return
+        }
+        mutationWaiters.removeFirst().resume()
+    }
+
+    private func resumeSatisfiedMutationQueueDepthWaiters() {
+        var remaining: [MutationQueueDepthWaiter] = []
+        for waiter in mutationQueueDepthWaiters {
+            if mutationWaiters.count >= waiter.minimumDepth {
+                waiter.continuation.resume()
+            } else {
+                remaining.append(waiter)
+            }
+        }
+        mutationQueueDepthWaiters = remaining
     }
 }
