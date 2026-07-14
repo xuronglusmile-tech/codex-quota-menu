@@ -365,6 +365,147 @@ struct QuotaStoreTests {
     }
 
     @Test
+    func testOlderNotificationPreferenceCompletionCannotOverrideNewerCall() async {
+        let now = Date(timeIntervalSince1970: 5_000)
+        let snapshot = Self.snapshot(fetchedAt: now, count: 4)
+        let notifications = ReverseCompletionNotifications()
+        let store = QuotaStore(
+            reader: StubQuotaReader(result: .success(snapshot)),
+            cache: MemoryQuotaCache(snapshot: snapshot),
+            notifications: notifications,
+            now: { now }
+        )
+        await store.loadCache()
+
+        let older = Task { await store.setNotificationsEnabled(true) }
+        await notifications.waitUntilSetCallCount(1)
+        let newer = Task { await store.setNotificationsEnabled(false) }
+        await notifications.waitUntilSetCallCount(2)
+
+        await notifications.completeSetCall(
+            at: 1,
+            enabledResult: false,
+            permissionResult: .denied
+        )
+        await newer.value
+        #expect(!store.notificationsEnabled)
+        #expect(store.notificationPermission == .denied)
+
+        await notifications.completeSetCall(
+            at: 0,
+            enabledResult: true,
+            permissionResult: .authorized
+        )
+        await older.value
+
+        #expect(store.notificationsEnabled == (await notifications.persistedEnabled))
+        #expect(!store.notificationsEnabled)
+        #expect(store.notificationPermission == .denied)
+        #expect(await notifications.reconciledSnapshots.isEmpty)
+        #expect(store.state == .fresh(snapshot))
+    }
+
+    @Test
+    func testStartupNotificationResultCannotOverrideSameRunUserToggle() async {
+        let now = Date(timeIntervalSince1970: 5_000)
+        let snapshot = Self.snapshot(fetchedAt: now, count: 4)
+        let reader = SequenceQuotaReader(snapshots: [snapshot])
+        let notifications = StartupToggleNotifications()
+        let sleeper = ControlledStoreSleeper()
+        let store = QuotaStore(
+            reader: reader,
+            cache: MemoryQuotaCache(snapshot: snapshot),
+            notifications: notifications,
+            now: { now },
+            sleep: { try await sleeper.sleep(seconds: $0) }
+        )
+
+        store.start()
+        await notifications.waitUntilStartupEnabledReadIsSuspended()
+        await store.setNotificationsEnabled(false)
+        #expect(!store.notificationsEnabled)
+        #expect(store.notificationPermission == .denied)
+
+        await notifications.resumeStartupEnabledRead()
+        await sleeper.waitUntilRequestCount(1)
+
+        #expect(store.notificationsEnabled == (await notifications.persistedEnabled))
+        #expect(!store.notificationsEnabled)
+        #expect(store.notificationPermission == .denied)
+        #expect(store.state == .fresh(snapshot))
+        #expect(await notifications.authorizationRequestCount == 0)
+
+        await store.stop()
+    }
+
+    @Test
+    func testConcurrentStopCallersAwaitFinalizationAndSecondaryCanRestartImmediately() async {
+        let now = Date(timeIntervalSince1970: 5_000)
+        let restartSnapshot = Self.snapshot(fetchedAt: now, count: 8)
+        let reader = SuspendedCleanupQuotaReader(restartSnapshot: restartSnapshot)
+        let primaryCompletion = StopCallerProbe()
+        let secondaryCompletion = StopCallerProbe()
+        let store = QuotaStore(
+            reader: reader,
+            cache: MemoryQuotaCache(snapshot: nil),
+            notifications: RecordingNotifications(),
+            now: { now }
+        )
+
+        store.start()
+        await reader.waitUntilReadCount(1)
+        #expect(store.isRefreshing)
+
+        let primary = Task(priority: .background) { @MainActor in
+            await store.stop()
+            await primaryCompletion.markFinished(observedFinalized: !store.isRefreshing)
+        }
+        await reader.waitUntilShutdownStarts()
+        let secondary = Task(priority: .high) { @MainActor in
+            await secondaryCompletion.markStarted()
+            await store.stop()
+            let finalized = !store.isRefreshing
+            store.start()
+            await secondaryCompletion.markFinished(observedFinalized: finalized)
+        }
+        await secondaryCompletion.waitUntilStarted()
+        for _ in 0..<10 {
+            await Task<Never, Never>.yield()
+        }
+
+        #expect(!(await primaryCompletion.isFinished))
+        #expect(!(await secondaryCompletion.isFinished))
+        await reader.resumeFirstShutdown()
+        let secondaryFinished = await secondaryCompletion.waitForFinished(maximumYields: 1_000)
+        #expect(secondaryFinished)
+        guard secondaryFinished else {
+            primary.cancel()
+            secondary.cancel()
+            return
+        }
+        await secondary.value
+
+        #expect(await secondaryCompletion.observedFinalized)
+        let restarted = await reader.waitForReadCount(2, maximumYields: 1_000)
+        #expect(restarted)
+        if restarted {
+            #expect(store.state == .fresh(restartSnapshot))
+        }
+        #expect(await reader.shutdownCount == 1)
+
+        let primaryFinished = await primaryCompletion.waitForFinished(maximumYields: 1_000)
+        #expect(primaryFinished)
+        guard primaryFinished else {
+            primary.cancel()
+            return
+        }
+        await primary.value
+        #expect(await primaryCompletion.observedFinalized)
+        await store.stop()
+        #expect(await reader.shutdownCount == 2)
+    }
+
+    @Test
     func testNotificationSettingUpdatesPermissionWithoutChangingQuotaState() async {
         let now = Date(timeIntervalSince1970: 5_000)
         let live = Self.snapshot(fetchedAt: now, count: 5)
@@ -703,6 +844,246 @@ private actor SuspendedPermissionNotifications: ExpiryNotificationReconciling {
         let continuation = permissionContinuation
         permissionContinuation = nil
         continuation?.resume()
+    }
+}
+
+private struct NotificationReadResult {
+    let enabled: Bool
+    let permission: NotificationPermissionState
+}
+
+private actor ReverseCompletionNotifications: ExpiryNotificationReconciling {
+    private var persisted = true
+    private var setContinuations: [CheckedContinuation<Void, Never>?] = []
+    private var setCallWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private var readResults: [NotificationReadResult] = []
+    private var pendingPermissions: [NotificationPermissionState] = []
+    private(set) var reconciledSnapshots: [QuotaSnapshot] = []
+
+    var persistedEnabled: Bool {
+        persisted
+    }
+
+    func requestAuthorization() async {}
+
+    func reconcile(snapshot: QuotaSnapshot, now: Date) async {
+        reconciledSnapshots.append(snapshot)
+    }
+
+    func setEnabled(_ enabled: Bool) async {
+        persisted = enabled
+        let index = setContinuations.count
+        setContinuations.append(nil)
+        resumeSetCallWaiters()
+        await withCheckedContinuation { continuation in
+            setContinuations[index] = continuation
+        }
+    }
+
+    func isEnabled() async -> Bool {
+        guard !readResults.isEmpty else { return persisted }
+        let result = readResults.removeFirst()
+        pendingPermissions.append(result.permission)
+        return result.enabled
+    }
+
+    func permissionState() async -> NotificationPermissionState {
+        guard !pendingPermissions.isEmpty else {
+            return persisted ? .authorized : .denied
+        }
+        return pendingPermissions.removeFirst()
+    }
+
+    func waitUntilSetCallCount(_ target: Int) async {
+        guard setContinuations.count < target else { return }
+        await withCheckedContinuation { continuation in
+            setCallWaiters.append((target, continuation))
+        }
+    }
+
+    func completeSetCall(
+        at index: Int,
+        enabledResult: Bool,
+        permissionResult: NotificationPermissionState
+    ) {
+        readResults.append(
+            NotificationReadResult(
+                enabled: enabledResult,
+                permission: permissionResult
+            )
+        )
+        let continuation = setContinuations[index]
+        setContinuations[index] = nil
+        continuation?.resume()
+    }
+
+    private func resumeSetCallWaiters() {
+        let ready = setCallWaiters.filter { $0.0 <= setContinuations.count }
+        setCallWaiters.removeAll { $0.0 <= setContinuations.count }
+        ready.forEach { $0.1.resume() }
+    }
+}
+
+private actor StartupToggleNotifications: ExpiryNotificationReconciling {
+    private var persisted = true
+    private var permission = NotificationPermissionState.denied
+    private var enabledReadCount = 0
+    private var startupEnabledContinuation: CheckedContinuation<Void, Never>?
+    private var startupEnabledWaiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var authorizationRequestCount = 0
+
+    var persistedEnabled: Bool {
+        persisted
+    }
+
+    func requestAuthorization() async {
+        authorizationRequestCount += 1
+        permission = .authorized
+    }
+
+    func reconcile(snapshot: QuotaSnapshot, now: Date) async {}
+
+    func setEnabled(_ enabled: Bool) async {
+        persisted = enabled
+        permission = enabled ? .authorized : .denied
+    }
+
+    func isEnabled() async -> Bool {
+        enabledReadCount += 1
+        if enabledReadCount == 1 {
+            await withCheckedContinuation { continuation in
+                startupEnabledContinuation = continuation
+                let waiters = startupEnabledWaiters
+                startupEnabledWaiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+            return true
+        }
+        return persisted
+    }
+
+    func permissionState() async -> NotificationPermissionState {
+        permission
+    }
+
+    func waitUntilStartupEnabledReadIsSuspended() async {
+        guard startupEnabledContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            startupEnabledWaiters.append(continuation)
+        }
+    }
+
+    func resumeStartupEnabledRead() {
+        let continuation = startupEnabledContinuation
+        startupEnabledContinuation = nil
+        continuation?.resume()
+    }
+}
+
+private actor SuspendedCleanupQuotaReader: QuotaReading {
+    private let restartSnapshot: QuotaSnapshot
+    private var firstReadContinuation: CheckedContinuation<QuotaSnapshot, any Error>?
+    private var firstShutdownContinuation: CheckedContinuation<Void, Never>?
+    private var readWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private var shutdownStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var readCount = 0
+    private(set) var shutdownCount = 0
+
+    init(restartSnapshot: QuotaSnapshot) {
+        self.restartSnapshot = restartSnapshot
+    }
+
+    func read() async throws -> QuotaSnapshot {
+        readCount += 1
+        resumeReadWaiters()
+        if readCount == 1 {
+            return try await withCheckedThrowingContinuation { continuation in
+                firstReadContinuation = continuation
+            }
+        }
+        return restartSnapshot
+    }
+
+    func shutdown() async {
+        shutdownCount += 1
+        guard shutdownCount == 1 else { return }
+        let waiters = shutdownStartWaiters
+        shutdownStartWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        await withCheckedContinuation { continuation in
+            firstShutdownContinuation = continuation
+        }
+    }
+
+    func waitUntilReadCount(_ target: Int) async {
+        guard readCount < target else { return }
+        await withCheckedContinuation { continuation in
+            readWaiters.append((target, continuation))
+        }
+    }
+
+    func waitForReadCount(_ target: Int, maximumYields: Int) async -> Bool {
+        for _ in 0..<maximumYields {
+            if readCount >= target { return true }
+            await Task<Never, Never>.yield()
+        }
+        return readCount >= target
+    }
+
+    func waitUntilShutdownStarts() async {
+        guard firstShutdownContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            shutdownStartWaiters.append(continuation)
+        }
+    }
+
+    func resumeFirstShutdown() {
+        let readContinuation = firstReadContinuation
+        firstReadContinuation = nil
+        readContinuation?.resume(throwing: CancellationError())
+        let shutdownContinuation = firstShutdownContinuation
+        firstShutdownContinuation = nil
+        shutdownContinuation?.resume()
+    }
+
+    private func resumeReadWaiters() {
+        let ready = readWaiters.filter { $0.0 <= readCount }
+        readWaiters.removeAll { $0.0 <= readCount }
+        ready.forEach { $0.1.resume() }
+    }
+}
+
+private actor StopCallerProbe {
+    private var started = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var isFinished = false
+    private(set) var observedFinalized = false
+
+    func markStarted() {
+        started = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func markFinished(observedFinalized: Bool) {
+        self.observedFinalized = observedFinalized
+        isFinished = true
+    }
+
+    func waitForFinished(maximumYields: Int) async -> Bool {
+        for _ in 0..<maximumYields {
+            if isFinished { return true }
+            await Task<Never, Never>.yield()
+        }
+        return isFinished
     }
 }
 

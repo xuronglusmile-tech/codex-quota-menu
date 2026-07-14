@@ -25,11 +25,12 @@ final class QuotaStore: ObservableObject {
     private let sleep: @Sendable (TimeInterval) async throws -> Void
     private var generation: UInt64 = 0
     private var nextTaskID: UInt64 = 0
+    private var notificationOperationRevision: UInt64 = 0
     private var isStarted = false
     private var refreshTask: OwnedTask?
     private var loopTask: OwnedTask?
     private var terminationTask: OwnedTask?
-    private var stopTask: Task<Void, Never>?
+    private var stopTask: OwnedTask?
 
     init(
         reader: any QuotaReading,
@@ -54,15 +55,39 @@ final class QuotaStore: ObservableObject {
     func setNotificationsEnabled(_ enabled: Bool) async {
         let operationGeneration = generation
         guard stopTask == nil else { return }
+        let operationRevision = beginNotificationOperation()
 
         await notifications.setEnabled(enabled)
+        guard canPublishNotificationOperation(
+            generation: operationGeneration,
+            revision: operationRevision
+        ) else {
+            return
+        }
         let storedEnabled = await notifications.isEnabled()
+        guard canPublishNotificationOperation(
+            generation: operationGeneration,
+            revision: operationRevision
+        ) else {
+            return
+        }
         let permission = await notifications.permissionState()
-        guard canMutate(generation: operationGeneration) else { return }
+        guard canPublishNotificationOperation(
+            generation: operationGeneration,
+            revision: operationRevision
+        ) else {
+            return
+        }
 
         notificationsEnabled = storedEnabled
         notificationPermission = permission
         guard storedEnabled, let snapshot = state.snapshot else { return }
+        guard canPublishNotificationOperation(
+            generation: operationGeneration,
+            revision: operationRevision
+        ) else {
+            return
+        }
         await notifications.reconcile(snapshot: snapshot, now: now())
     }
 
@@ -87,6 +112,7 @@ final class QuotaStore: ObservableObject {
 
         generation &+= 1
         let startGeneration = generation
+        let startupNotificationRevision = beginNotificationOperation()
         isStarted = true
 
         let terminationID = makeTaskID()
@@ -110,7 +136,11 @@ final class QuotaStore: ObservableObject {
         let loopID = makeTaskID()
         let loop = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.runLoop(generation: startGeneration, id: loopID)
+            await self.runLoop(
+                generation: startGeneration,
+                id: loopID,
+                notificationRevision: startupNotificationRevision
+            )
         }
         loopTask = OwnedTask(
             id: loopID,
@@ -121,7 +151,7 @@ final class QuotaStore: ObservableObject {
 
     func stop() async {
         if let stopTask {
-            await stopTask.value
+            await stopTask.task.value
             return
         }
         guard
@@ -136,52 +166,43 @@ final class QuotaStore: ObservableObject {
         let refresh = refreshTask
         let loop = loopTask
         let termination = terminationTask
-        refreshTask = nil
-        loopTask = nil
-        terminationTask = nil
 
         refresh?.task.cancel()
         loop?.task.cancel()
         termination?.task.cancel()
 
         let reader = reader
-        let task = Task {
+        let stopID = makeTaskID()
+        let task = Task { @MainActor [weak self] in
             await reader.shutdown()
             await refresh?.task.value
             await loop?.task.value
             await termination?.task.value
+            self?.finishStop(id: stopID)
         }
-        stopTask = task
+        stopTask = OwnedTask(id: stopID, generation: generation, task: task)
         await task.value
-        stopTask = nil
-        isRefreshing = false
     }
 
-    private func runLoop(generation: UInt64, id: UInt64) async {
+    private func runLoop(
+        generation: UInt64,
+        id: UInt64,
+        notificationRevision: UInt64
+    ) async {
         await loadCache(generation: generation)
         guard isRunning(generation: generation) else {
             finishLoop(generation: generation, id: id)
             return
         }
 
-        let enabled = await notifications.isEnabled()
+        await initializeNotifications(
+            generation: generation,
+            revision: notificationRevision
+        )
         guard isRunning(generation: generation) else {
             finishLoop(generation: generation, id: id)
             return
         }
-        notificationsEnabled = enabled
-
-        await notifications.requestAuthorization()
-        guard isRunning(generation: generation) else {
-            finishLoop(generation: generation, id: id)
-            return
-        }
-        let permission = await notifications.permissionState()
-        guard isRunning(generation: generation) else {
-            finishLoop(generation: generation, id: id)
-            return
-        }
-        notificationPermission = permission
 
         await refresh(generation: generation)
         while isRunning(generation: generation) {
@@ -194,6 +215,33 @@ final class QuotaStore: ObservableObject {
             await refresh(generation: generation)
         }
         finishLoop(generation: generation, id: id)
+    }
+
+    private func initializeNotifications(generation: UInt64, revision: UInt64) async {
+        let enabled = await notifications.isEnabled()
+        guard canPublishStartupNotificationOperation(
+            generation: generation,
+            revision: revision
+        ) else {
+            return
+        }
+        notificationsEnabled = enabled
+
+        await notifications.requestAuthorization()
+        guard canPublishStartupNotificationOperation(
+            generation: generation,
+            revision: revision
+        ) else {
+            return
+        }
+        let permission = await notifications.permissionState()
+        guard canPublishStartupNotificationOperation(
+            generation: generation,
+            revision: revision
+        ) else {
+            return
+        }
+        notificationPermission = permission
     }
 
     private func loadCache(generation: UInt64) async {
@@ -281,12 +329,38 @@ final class QuotaStore: ObservableObject {
         isStarted && canMutate(generation: generation) && !Task.isCancelled
     }
 
+    private func canPublishNotificationOperation(generation: UInt64, revision: UInt64) -> Bool {
+        canMutate(generation: generation) && notificationOperationRevision == revision
+    }
+
+    private func canPublishStartupNotificationOperation(
+        generation: UInt64,
+        revision: UInt64
+    ) -> Bool {
+        isRunning(generation: generation)
+            && notificationOperationRevision == revision
+    }
+
     private func finishLoop(generation: UInt64, id: UInt64) {
         guard loopTask?.generation == generation, loopTask?.id == id else { return }
         loopTask = nil
         if self.generation == generation {
             isStarted = false
         }
+    }
+
+    private func finishStop(id: UInt64) {
+        guard stopTask?.id == id else { return }
+        isRefreshing = false
+        refreshTask = nil
+        loopTask = nil
+        terminationTask = nil
+        stopTask = nil
+    }
+
+    private func beginNotificationOperation() -> UInt64 {
+        notificationOperationRevision &+= 1
+        return notificationOperationRevision
     }
 
     private func makeTaskID() -> UInt64 {
