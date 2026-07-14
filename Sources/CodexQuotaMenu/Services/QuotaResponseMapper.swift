@@ -9,19 +9,22 @@ enum QuotaMappingError: LocalizedError {
 
 enum QuotaResponseMapper {
     static func map(_ response: RateLimitsReadResponse, fetchedAt: Date) throws -> QuotaSnapshot {
-        let buckets: [WireRateLimitSnapshot]
+        let buckets: [(keyedID: String, snapshot: WireRateLimitSnapshot)]
         if let keyed = response.rateLimitsByLimitId, !keyed.isEmpty {
-            buckets = keyed.keys.sorted().compactMap { keyed[$0] }
+            buckets = keyed.keys.sorted().compactMap { keyedID in
+                keyed[keyedID].map { (keyedID, $0) }
+            }
         } else {
-            buckets = [response.rateLimits]
+            buckets = [("codex", response.rateLimits)]
         }
 
-        let windows = buckets.flatMap { bucket in
-            [("primary", bucket.primary), ("secondary", bucket.secondary)].compactMap { entry -> QuotaWindow? in
+        let windows = buckets.flatMap { entry in
+            let (keyedID, bucket) = entry
+            return [("primary", bucket.primary), ("secondary", bucket.secondary)].compactMap { entry -> QuotaWindow? in
                 let (slot, optionalWindow) = entry
                 guard let window = optionalWindow else { return nil }
                 return QuotaWindow(
-                    id: "\(bucket.limitId ?? "codex")-\(slot)",
+                    id: "\(bucket.limitId ?? keyedID)-\(slot)",
                     label: label(for: window.windowDurationMins, fallback: bucket.limitName),
                     usedPercent: window.usedPercent,
                     durationMinutes: window.windowDurationMins,
