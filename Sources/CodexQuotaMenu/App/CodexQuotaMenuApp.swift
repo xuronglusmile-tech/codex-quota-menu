@@ -1,8 +1,35 @@
+import AppKit
 import SwiftUI
+
+@MainActor
+final class CodexQuotaMenuApplicationDelegate: NSObject, NSApplicationDelegate {
+    private var terminationCoordinator = ApplicationTerminationCoordinator(
+        reply: { shouldTerminate in
+            NSApplication.shared.reply(toApplicationShouldTerminate: shouldTerminate)
+        }
+    )
+
+    func configureTermination(cleanup: @escaping ApplicationTerminationCoordinator.Cleanup) {
+        terminationCoordinator = ApplicationTerminationCoordinator(
+            cleanup: cleanup,
+            reply: { shouldTerminate in
+                NSApplication.shared.reply(toApplicationShouldTerminate: shouldTerminate)
+            }
+        )
+    }
+
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        terminationCoordinator.requestTermination()
+    }
+}
 
 @main
 @MainActor
 struct CodexQuotaMenuApp: App {
+    @NSApplicationDelegateAdaptor(CodexQuotaMenuApplicationDelegate.self)
+    private var applicationDelegate
     @StateObject private var store: QuotaStore
     @StateObject private var launchAtLogin: LaunchAtLoginController
 
@@ -15,6 +42,9 @@ struct CodexQuotaMenuApp: App {
         let launchAtLogin = LaunchAtLoginController()
         _store = StateObject(wrappedValue: store)
         _launchAtLogin = StateObject(wrappedValue: launchAtLogin)
+        applicationDelegate.configureTermination {
+            await store.stop()
+        }
         launchAtLogin.ensureDefaultEnabled()
         store.start()
     }

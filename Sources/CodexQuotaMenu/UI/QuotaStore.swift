@@ -1,4 +1,3 @@
-import AppKit
 import Combine
 import Foundation
 
@@ -29,7 +28,6 @@ final class QuotaStore: ObservableObject {
     private var isStarted = false
     private var refreshTask: OwnedTask?
     private var loopTask: OwnedTask?
-    private var terminationTask: OwnedTask?
     private var stopTask: OwnedTask?
 
     init(
@@ -115,24 +113,6 @@ final class QuotaStore: ObservableObject {
         let startupNotificationRevision = beginNotificationOperation()
         isStarted = true
 
-        let terminationID = makeTaskID()
-        let termination = Task { @MainActor [weak self] in
-            for await _ in NotificationCenter.default.notifications(
-                named: NSApplication.willTerminateNotification
-            ) {
-                guard !Task.isCancelled else { return }
-                Task { @MainActor [weak self] in
-                    await self?.stop()
-                }
-                return
-            }
-        }
-        terminationTask = OwnedTask(
-            id: terminationID,
-            generation: startGeneration,
-            task: termination
-        )
-
         let loopID = makeTaskID()
         let loop = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -155,7 +135,7 @@ final class QuotaStore: ObservableObject {
             return
         }
         guard
-            isStarted || refreshTask != nil || loopTask != nil || terminationTask != nil
+            isStarted || refreshTask != nil || loopTask != nil
         else {
             return
         }
@@ -165,11 +145,9 @@ final class QuotaStore: ObservableObject {
 
         let refresh = refreshTask
         let loop = loopTask
-        let termination = terminationTask
 
         refresh?.task.cancel()
         loop?.task.cancel()
-        termination?.task.cancel()
 
         let reader = reader
         let stopID = makeTaskID()
@@ -177,7 +155,6 @@ final class QuotaStore: ObservableObject {
             await reader.shutdown()
             await refresh?.task.value
             await loop?.task.value
-            await termination?.task.value
             self?.finishStop(id: stopID)
         }
         stopTask = OwnedTask(id: stopID, generation: generation, task: task)
@@ -354,7 +331,6 @@ final class QuotaStore: ObservableObject {
         isRefreshing = false
         refreshTask = nil
         loopTask = nil
-        terminationTask = nil
         stopTask = nil
     }
 

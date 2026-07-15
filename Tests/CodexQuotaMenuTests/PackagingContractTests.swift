@@ -347,6 +347,35 @@ struct PackagingContractTests {
     }
 
     @Test
+    func testApplicationDelegateGatesEveryTerminationPath() throws {
+        let app = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/CodexQuotaMenu/App/CodexQuotaMenuApp.swift"
+            ),
+            encoding: .utf8
+        )
+        let store = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/CodexQuotaMenu/UI/QuotaStore.swift"
+            ),
+            encoding: .utf8
+        )
+        let menu = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/CodexQuotaMenu/UI/MenuBarContentView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(app.contains("@NSApplicationDelegateAdaptor"))
+        #expect(app.contains("applicationShouldTerminate"))
+        #expect(app.contains("configureTermination"))
+        #expect(!store.contains("NSApplication.willTerminateNotification"))
+        #expect(menu.contains("NSApplication.shared.terminate(nil)"))
+        #expect(!menu.contains("await store.stop()"))
+    }
+
+    @Test
     func testReadmeDocumentsBuildInstallPrivacyAndCompleteUninstall() throws {
         let readme = try String(
             contentsOf: root.appendingPathComponent("README.md"),

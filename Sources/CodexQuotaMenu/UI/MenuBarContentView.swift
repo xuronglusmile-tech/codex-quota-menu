@@ -216,10 +216,7 @@ struct MenuBarContentView: View {
             }
             Spacer()
             Button("退出") {
-                Task {
-                    await store.stop()
-                    NSApplication.shared.terminate(nil)
-                }
+                NSApplication.shared.terminate(nil)
             }
         }
     }
