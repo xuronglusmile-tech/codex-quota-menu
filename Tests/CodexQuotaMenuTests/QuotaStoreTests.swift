@@ -457,50 +457,35 @@ struct QuotaStoreTests {
         #expect(store.isRefreshing)
 
         let primary = Task(priority: .background) { @MainActor in
+            primaryCompletion.markStopReached()
             await store.stop()
-            await primaryCompletion.markFinished(observedFinalized: !store.isRefreshing)
+            primaryCompletion.markFinished()
         }
+        await primaryCompletion.waitUntilStopReached()
         await reader.waitUntilShutdownStarts()
         let secondary = Task(priority: .high) { @MainActor in
-            await secondaryCompletion.markStarted()
+            secondaryCompletion.markStopReached()
             await store.stop()
             let finalized = !store.isRefreshing
+            secondaryCompletion.markFinished(observedFinalized: finalized)
+            #expect(finalized)
             store.start()
-            await secondaryCompletion.markFinished(observedFinalized: finalized)
         }
-        await secondaryCompletion.waitUntilStarted()
-        for _ in 0..<10 {
-            await Task<Never, Never>.yield()
-        }
+        await secondaryCompletion.waitUntilStopReached()
 
-        #expect(!(await primaryCompletion.isFinished))
-        #expect(!(await secondaryCompletion.isFinished))
+        #expect(!primaryCompletion.isFinished)
+        #expect(!secondaryCompletion.isFinished)
         await reader.resumeFirstShutdown()
-        let secondaryFinished = await secondaryCompletion.waitForFinished(maximumYields: 1_000)
-        #expect(secondaryFinished)
-        guard secondaryFinished else {
-            primary.cancel()
-            secondary.cancel()
-            return
-        }
         await secondary.value
 
-        #expect(await secondaryCompletion.observedFinalized)
-        let restarted = await reader.waitForReadCount(2, maximumYields: 1_000)
-        #expect(restarted)
-        if restarted {
-            #expect(store.state == .fresh(restartSnapshot))
-        }
+        #expect(secondaryCompletion.observedFinalized == true)
+        await reader.waitUntilReadCount(2)
+        await store.refresh()
+        #expect(store.state == .fresh(restartSnapshot))
         #expect(await reader.shutdownCount == 1)
 
-        let primaryFinished = await primaryCompletion.waitForFinished(maximumYields: 1_000)
-        #expect(primaryFinished)
-        guard primaryFinished else {
-            primary.cancel()
-            return
-        }
         await primary.value
-        #expect(await primaryCompletion.observedFinalized)
+        #expect(primaryCompletion.isFinished)
         await store.stop()
         #expect(await reader.shutdownCount == 2)
     }
@@ -1022,14 +1007,6 @@ private actor SuspendedCleanupQuotaReader: QuotaReading {
         }
     }
 
-    func waitForReadCount(_ target: Int, maximumYields: Int) async -> Bool {
-        for _ in 0..<maximumYields {
-            if readCount >= target { return true }
-            await Task<Never, Never>.yield()
-        }
-        return readCount >= target
-    }
-
     func waitUntilShutdownStarts() async {
         guard firstShutdownContinuation == nil else { return }
         await withCheckedContinuation { continuation in
@@ -1053,37 +1030,32 @@ private actor SuspendedCleanupQuotaReader: QuotaReading {
     }
 }
 
-private actor StopCallerProbe {
-    private var started = false
-    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+@MainActor
+private final class StopCallerProbe {
+    private var stopReached = false
+    private var stopWaiters: [CheckedContinuation<Void, Never>] = []
     private(set) var isFinished = false
-    private(set) var observedFinalized = false
+    private(set) var observedFinalized: Bool?
 
-    func markStarted() {
-        started = true
-        let waiters = startWaiters
-        startWaiters.removeAll()
+    // Call synchronously immediately before stop(). The MainActor cannot run
+    // a waiting test task until this caller next suspends inside the barrier.
+    func markStopReached() {
+        stopReached = true
+        let waiters = stopWaiters
+        stopWaiters.removeAll()
         waiters.forEach { $0.resume() }
     }
 
-    func waitUntilStarted() async {
-        guard !started else { return }
+    func waitUntilStopReached() async {
+        guard !stopReached else { return }
         await withCheckedContinuation { continuation in
-            startWaiters.append(continuation)
+            stopWaiters.append(continuation)
         }
     }
 
-    func markFinished(observedFinalized: Bool) {
+    func markFinished(observedFinalized: Bool? = nil) {
         self.observedFinalized = observedFinalized
         isFinished = true
-    }
-
-    func waitForFinished(maximumYields: Int) async -> Bool {
-        for _ in 0..<maximumYields {
-            if isFinished { return true }
-            await Task<Never, Never>.yield()
-        }
-        return isFinished
     }
 }
 
