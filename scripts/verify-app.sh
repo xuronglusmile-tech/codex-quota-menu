@@ -5,7 +5,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="${1:-$ROOT/dist/Codex Quota Menu.app}"
 PLIST="$APP/Contents/Info.plist"
 EXECUTABLE="$APP/Contents/MacOS/CodexQuotaMenu"
-METHOD_FILE="$ROOT/Sources/CodexQuotaMenu/Services/CodexAppServerClient.swift"
 SUPPORT_DIR="$ROOT/.build/codex-quota-menu-support"
 SWIFTPM_DIR="$SUPPORT_DIR/swiftpm"
 export CLANG_MODULE_CACHE_PATH="$SUPPORT_DIR/clang-module-cache"
@@ -68,61 +67,7 @@ SIGNATURE_INFO="$(/usr/bin/codesign -d --verbose=4 "$APP" 2>&1)"
 printf '%s\n' "$SIGNATURE_INFO" | /usr/bin/grep -q '^Signature=adhoc$' \
   || fail "bundle is not ad-hoc signed"
 
-test -f "$METHOD_FILE" || fail "missing AppServer method source"
-METHOD_ENUM="$(/usr/bin/sed -n '/^enum AppServerMethod:/,/^}/p' "$METHOD_FILE")"
-CASE_COUNT="$(printf '%s\n' "$METHOD_ENUM" | /usr/bin/grep -Ec '^[[:space:]]+case ')"
-test "$CASE_COUNT" = 3 || fail "AppServerMethod must contain exactly three cases"
-printf '%s\n' "$METHOD_ENUM" | /usr/bin/grep -Eq '^[[:space:]]+case initialize[[:space:]]*$' \
-  || fail "initialize method is missing"
-printf '%s\n' "$METHOD_ENUM" | /usr/bin/grep -Eq '^[[:space:]]+case initialized[[:space:]]*$' \
-  || fail "initialized method is missing"
-printf '%s\n' "$METHOD_ENUM" | /usr/bin/grep -Eq \
-  '^[[:space:]]+case rateLimitsRead = "account/rateLimits/read"[[:space:]]*$' \
-  || fail "account/rateLimits/read method is missing"
-
-if printf '%s\n' "$METHOD_ENUM" | /usr/bin/grep -Eiq '(consume|redeem|write)'; then
-  fail "consume/redeem/write AppServer method found"
-fi
-
-SEND_CALL_COUNT="$(/usr/bin/grep -Ec '\.send[[:space:]]*\(' "$METHOD_FILE")"
-test "$SEND_CALL_COUNT" = 3 || fail "client must contain exactly three send call sites"
-
-SEND_BLOCKS="$(/usr/bin/awk '
-  /\.send[[:space:]]*\(/ {
-    if (inSend) exit 2
-    inSend = 1
-    count += 1
-  }
-  inSend { print }
-  inSend && /^[[:space:]]*\)[[:space:]]*$/ { inSend = 0 }
-  END {
-    if (inSend || count != 3) exit 1
-  }
-' "$METHOD_FILE")" || fail "could not isolate the three send payloads"
-
-for method in initialize initialized rateLimitsRead; do
-  SOURCE_METHOD_COUNT="$(/usr/bin/grep -Ec "AppServerMethod\\.$method\\.rawValue" "$METHOD_FILE")"
-  test "$SOURCE_METHOD_COUNT" = 1 \
-    || fail "AppServerMethod.$method must appear exactly once in client source"
-  SEND_METHOD_COUNT="$(printf '%s\n' "$SEND_BLOCKS" \
-    | /usr/bin/grep -Ec "AppServerMethod\\.$method\\.rawValue")"
-  test "$SEND_METHOD_COUNT" = 1 \
-    || fail "AppServerMethod.$method must appear in exactly one send payload"
-done
-
-if printf '%s\n' "$SEND_BLOCKS" | /usr/bin/grep -Eiq '(consume|redeem|write)'; then
-  fail "consume/redeem/write outbound send payload found"
-fi
-
-if /usr/bin/grep -REn '"method"[[:space:]]*:[[:space:]]*"[^\\]' "$ROOT/Sources"; then
-  fail "literal outbound method string found outside the closed enum"
-fi
-
-if /usr/bin/grep -REni \
-  '"method"[[:space:]]*:[[:space:]]*"[^"]*(consume|redeem|write)|account/[A-Za-z0-9_./-]*(consume|redeem|write)' \
-  "$ROOT/Sources"; then
-  fail "consume/redeem/write outbound method found"
-fi
+"$ROOT/scripts/audit-outbound-methods.sh" "$ROOT/Sources"
 
 "$ROOT/scripts/test.sh" --filter CodexAppServerClientTests.testInitializesThenReadsRateLimitsUsingOnlyWhitelistedMethodsAndExactParameters
 

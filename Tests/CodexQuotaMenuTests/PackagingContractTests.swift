@@ -80,8 +80,11 @@ struct PackagingContractTests {
     func testVerifyScriptChecksBundleSignatureMetadataAndReadOnlyMethods() throws {
         let scriptURL = root.appendingPathComponent("scripts/verify-app.sh")
         let script = try String(contentsOf: scriptURL, encoding: .utf8)
+        let auditScriptURL = root.appendingPathComponent("scripts/audit-outbound-methods.sh")
+        let auditScript = try String(contentsOf: auditScriptURL, encoding: .utf8)
 
         #expect(try executablePermissions(of: scriptURL) == 0o755)
+        #expect(try executablePermissions(of: auditScriptURL) == 0o755)
         for key in [
             "CFBundleDevelopmentRegion",
             "CFBundleDisplayName",
@@ -102,12 +105,8 @@ struct PackagingContractTests {
         #expect(script.contains("codesign --verify --strict"))
         #expect(script.contains("Signature=adhoc"))
         #expect(!script.contains("--deep"))
-        #expect(script.contains("AppServerMethod"))
-        #expect(script.contains("account/rateLimits/read"))
-        #expect(script.contains("consume|redeem|write"))
         #expect(script.contains(#"APP="${1:-$ROOT/dist/Codex Quota Menu.app}""#))
-        #expect(script.contains("SEND_CALL_COUNT"))
-        #expect(script.contains(#"test "$SEND_CALL_COUNT" = 3"#))
+        #expect(script.contains(#""$ROOT/scripts/audit-outbound-methods.sh" "$ROOT/Sources""#))
         #expect(script.contains(#""$ROOT/scripts/test.sh" --filter CodexAppServerClientTests.testInitializesThenReadsRateLimitsUsingOnlyWhitelistedMethodsAndExactParameters"#))
         #expect(script.contains(#"cmp -s "$CURRENT_RELEASE_EXECUTABLE" "$EXECUTABLE""#))
         #expect(script.contains(#"REFERENCE_APP="$SUPPORT_DIR/verification-reference/Codex Quota Menu.app""#))
@@ -117,6 +116,14 @@ struct PackagingContractTests {
         let releaseBuild = try #require(script.range(of: "swift build -c release"))
         let byteComparison = try #require(script.range(of: #"cmp -s "$CURRENT_RELEASE_EXECUTABLE" "$EXECUTABLE""#))
         #expect(releaseBuild.lowerBound < byteComparison.lowerBound)
+
+        #expect(auditScript.contains("AppServerMethod"))
+        #expect(auditScript.contains("account/rateLimits/read"))
+        #expect(auditScript.contains("consume|redeem|write"))
+        #expect(auditScript.contains("find"))
+        #expect(auditScript.contains("*.swift"))
+        #expect(auditScript.contains("GLOBAL_SEND_CALL_COUNT"))
+        #expect(auditScript.contains("send call outside allowed client"))
 
         let clientSource = try String(
             contentsOf: root.appendingPathComponent(
@@ -154,6 +161,49 @@ struct PackagingContractTests {
     }
 
     @Test
+    func testGlobalOutboundAuditAcceptsClosedFixtureAndRejectsDynamicSendInAnotherSwiftFile() throws {
+        let auditScriptURL = root.appendingPathComponent("scripts/audit-outbound-methods.sh")
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let fixtureRoot = temporaryDirectory.appendingPathComponent("Sources", isDirectory: true)
+        let clientDirectory = fixtureRoot.appendingPathComponent(
+            "CodexQuotaMenu/Services",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: clientDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.copyItem(
+            at: root.appendingPathComponent(
+                "Sources/CodexQuotaMenu/Services/CodexAppServerClient.swift"
+            ),
+            to: clientDirectory.appendingPathComponent("CodexAppServerClient.swift")
+        )
+
+        try run(executable: auditScriptURL.path, arguments: [fixtureRoot.path])
+
+        let injectedSource = ##"""
+        func injectedSend(transport: JSONLineTransport, runtimeMethod: String) async throws {
+            try await transport.send(#"{"method":"\#(runtimeMethod)","params":{}}"#)
+        }
+        """##
+        try Data(injectedSource.utf8).write(
+            to: fixtureRoot.appendingPathComponent("InjectedDynamicSend.swift")
+        )
+
+        let rejected = try runCapturing(
+            executable: auditScriptURL.path,
+            arguments: [fixtureRoot.path]
+        )
+        #expect(rejected.status != 0)
+        #expect(rejected.output.contains("send call outside allowed client"))
+        #expect(rejected.output.contains("InjectedDynamicSend.swift"))
+    }
+
+    @Test
     func testInstallScriptStagesVerifiesReplacesAndVerifiesWithoutSudo() throws {
         let scriptURL = root.appendingPathComponent("scripts/install-app.sh")
         let script = try String(contentsOf: scriptURL, encoding: .utf8)
@@ -188,8 +238,8 @@ struct PackagingContractTests {
         #expect(runningCheck.lowerBound < firstSwap.lowerBound)
         #expect(firstSwap.lowerBound < installedVerification.lowerBound)
         #expect(installedVerification.lowerBound < openNew.lowerBound)
-        #expect(openNew.lowerBound < completionOutput.lowerBound)
-        #expect(completionOutput.lowerBound < commitState.lowerBound)
+        #expect(openNew.lowerBound < commitState.lowerBound)
+        #expect(commitState.lowerBound < completionOutput.lowerBound)
     }
 
     @Test
@@ -307,6 +357,19 @@ struct PackagingContractTests {
     }
 
     private func run(executable: String, arguments: [String]) throws {
+        let result = try runCapturing(executable: executable, arguments: arguments)
+        guard result.status == 0 else {
+            throw PackagingProcessError.failed(
+                command: ([executable] + arguments).joined(separator: " "),
+                output: result.output
+            )
+        }
+    }
+
+    private func runCapturing(
+        executable: String,
+        arguments: [String]
+    ) throws -> (status: Int32, output: String) {
         let process = Process()
         let output = Pipe()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -315,15 +378,11 @@ struct PackagingContractTests {
         process.standardError = output
         try process.run()
         process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            let message = String(decoding: data, as: UTF8.self)
-            throw PackagingProcessError.failed(
-                command: ([executable] + arguments).joined(separator: " "),
-                output: message
-            )
-        }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        return (
+            status: process.terminationStatus,
+            output: String(decoding: data, as: UTF8.self)
+        )
     }
 }
 

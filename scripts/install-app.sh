@@ -76,5 +76,5 @@ fi
 
 "$ROOT/scripts/verify-app.sh" "$TARGET"
 /usr/bin/open -n "$TARGET"
-echo "$TARGET"
 STATE="committed"
+echo "$TARGET"
