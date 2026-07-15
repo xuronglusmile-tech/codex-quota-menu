@@ -32,3 +32,21 @@ struct WireResetCredit: Decodable, Sendable {
     let title: String?
     let description: String?
 }
+
+struct AccountUsageReadResponse: Decodable, Equatable, Sendable {
+    let dailyUsageBuckets: [WireDailyUsageBucket]?
+    let summary: WireAccountUsageSummary
+}
+
+struct WireDailyUsageBucket: Decodable, Equatable, Sendable {
+    let startDate: String
+    let tokens: Int64
+}
+
+struct WireAccountUsageSummary: Decodable, Equatable, Sendable {
+    let currentStreakDays: Int64?
+    let lifetimeTokens: Int64?
+    let longestRunningTurnSec: Int64?
+    let longestStreakDays: Int64?
+    let peakDailyTokens: Int64?
+}

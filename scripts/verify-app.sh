@@ -69,7 +69,7 @@ printf '%s\n' "$SIGNATURE_INFO" | /usr/bin/grep -q '^Signature=adhoc$' \
 
 "$ROOT/scripts/audit-outbound-methods.sh" "$ROOT/Sources"
 
-"$ROOT/scripts/test.sh" --filter CodexAppServerClientTests.testInitializesThenReadsRateLimitsUsingOnlyWhitelistedMethodsAndExactParameters
+"$ROOT/scripts/test.sh" --filter CodexAppServerClientTests.testInitializesThenReadsAccountSnapshotUsingOnlyWhitelistedMethods
 
 cd "$ROOT"
 swift build -c release "${SWIFT_ARGS[@]}"

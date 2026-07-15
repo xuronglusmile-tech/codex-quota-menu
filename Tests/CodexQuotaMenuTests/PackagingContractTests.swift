@@ -107,7 +107,7 @@ struct PackagingContractTests {
         #expect(!script.contains("--deep"))
         #expect(script.contains(#"APP="${1:-$ROOT/dist/Codex Quota Menu.app}""#))
         #expect(script.contains(#""$ROOT/scripts/audit-outbound-methods.sh" "$ROOT/Sources""#))
-        #expect(script.contains(#""$ROOT/scripts/test.sh" --filter CodexAppServerClientTests.testInitializesThenReadsRateLimitsUsingOnlyWhitelistedMethodsAndExactParameters"#))
+        #expect(script.contains(#""$ROOT/scripts/test.sh" --filter CodexAppServerClientTests.testInitializesThenReadsAccountSnapshotUsingOnlyWhitelistedMethods"#))
         #expect(script.contains(#"cmp -s "$CURRENT_RELEASE_EXECUTABLE" "$EXECUTABLE""#))
         #expect(script.contains(#"REFERENCE_APP="$SUPPORT_DIR/verification-reference/Codex Quota Menu.app""#))
         #expect(script.contains(#"cp "$BIN_DIR/CodexQuotaMenu" "$REFERENCE_APP/Contents/MacOS/CodexQuotaMenu""#))
@@ -119,6 +119,7 @@ struct PackagingContractTests {
 
         #expect(auditScript.contains("AppServerMethod"))
         #expect(auditScript.contains("account/rateLimits/read"))
+        #expect(auditScript.contains("account/usage/read"))
         #expect(auditScript.contains("consume|redeem|write"))
         #expect(auditScript.contains("find"))
         #expect(auditScript.contains("*.swift"))
@@ -131,8 +132,8 @@ struct PackagingContractTests {
             ),
             encoding: .utf8
         )
-        #expect(occurrenceCount(of: ".send(", in: clientSource) == 3)
-        for method in ["initialize", "initialized", "rateLimitsRead"] {
+        #expect(occurrenceCount(of: ".send(", in: clientSource) == 4)
+        for method in ["initialize", "initialized", "rateLimitsRead", "usageRead"] {
             #expect(
                 occurrenceCount(
                     of: "AppServerMethod.\(method).rawValue",
@@ -156,7 +157,8 @@ struct PackagingContractTests {
         #expect(enumCases == [
             "case initialize",
             "case initialized",
-            "case rateLimitsRead = \"account/rateLimits/read\""
+            "case rateLimitsRead = \"account/rateLimits/read\"",
+            "case usageRead = \"account/usage/read\""
         ])
     }
 

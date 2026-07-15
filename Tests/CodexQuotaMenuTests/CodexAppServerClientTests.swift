@@ -5,21 +5,29 @@ import Testing
 @Suite
 struct CodexAppServerClientTests {
     @Test
-    func testInitializesThenReadsRateLimitsUsingOnlyWhitelistedMethodsAndExactParameters() async throws {
-        let transport = ScriptedJSONLineTransport(lines: Self.successLines(resetCount: 5))
+    func testInitializesThenReadsAccountSnapshotUsingOnlyWhitelistedMethods() async throws {
+        let transport = ScriptedJSONLineTransport(lines: [
+            #"{"id":0,"result":{"userAgent":"test"}}"#,
+            Self.rateLimitsResponse(resetCount: 5),
+            #"{"id":2,"result":{"dailyUsageBuckets":[{"startDate":"2026-07-16","tokens":5000000}],"summary":{}}}"#
+        ])
         let client = CodexAppServerClient(makeTransport: { transport }, timeoutSeconds: 1)
 
-        let result = try await client.readRateLimits()
+        let result = try await client.readAccountSnapshot()
 
-        #expect(result.rateLimitResetCredits?.availableCount == 5)
+        #expect(result.rateLimits.rateLimitResetCredits?.availableCount == 5)
+        #expect(result.usage?.dailyUsageBuckets?.first?.tokens == 5_000_000)
         let objects = try await transport.sentLines.map(Self.decodeObject)
-        #expect(objects.count == 3)
         #expect(objects.compactMap { $0["method"] as? String } == [
             "initialize",
             "initialized",
-            "account/rateLimits/read"
+            "account/rateLimits/read",
+            "account/usage/read"
         ])
-        #expect(Set(AppServerMethod.allCases.map(\.rawValue)) == Set(objects.compactMap { $0["method"] as? String }))
+        #expect(objects[2]["id"] as? Int == 1)
+        #expect(objects[2]["params"] is NSNull)
+        #expect(objects[3]["id"] as? Int == 2)
+        #expect(objects[3]["params"] is NSNull)
 
         #expect(objects[0]["id"] as? Int == 0)
         let initializeParams = try #require(objects[0]["params"] as? [String: Any])
@@ -27,11 +35,46 @@ struct CodexAppServerClientTests {
         #expect(clientInfo["name"] as? String == "codex_quota_menu")
         #expect(clientInfo["title"] as? String == "Codex Quota Menu")
         #expect(clientInfo["version"] as? String == "0.1.0")
-
         #expect(objects[1]["id"] == nil)
         #expect((objects[1]["params"] as? [String: Any])?.isEmpty == true)
-        #expect(objects[2]["id"] as? Int == 1)
-        #expect(objects[2]["params"] is NSNull)
+        #expect(Set(AppServerMethod.allCases.map(\.rawValue)) == Set(objects.compactMap { $0["method"] as? String }))
+    }
+
+    @Test
+    func testUsageFailureReturnsRateLimitsAndDropsUnhealthyTransport() async throws {
+        let transport = ScriptedJSONLineTransport(lines: [
+            #"{"id":0,"result":{"userAgent":"test"}}"#,
+            Self.rateLimitsResponse(resetCount: 3),
+            #"{"id":2,"error":{"code":-32000,"message":"usage unavailable"}}"#
+        ])
+        let client = CodexAppServerClient(makeTransport: { transport }, timeoutSeconds: 1)
+
+        let result = try await client.readAccountSnapshot()
+
+        #expect(result.rateLimits.rateLimitResetCredits?.availableCount == 3)
+        #expect(result.usage == nil)
+        #expect(await transport.stopCount == 1)
+    }
+
+    @Test
+    func testUsageWireModelDistinguishesEmptyAndUnavailableBuckets() throws {
+        let decoder = JSONDecoder()
+        let empty = try decoder.decode(
+            AccountUsageReadResponse.self,
+            from: Data(#"{"dailyUsageBuckets":[],"summary":{}}"#.utf8)
+        )
+        let unavailable = try decoder.decode(
+            AccountUsageReadResponse.self,
+            from: Data(#"{"dailyUsageBuckets":null,"summary":{}}"#.utf8)
+        )
+        let missing = try decoder.decode(
+            AccountUsageReadResponse.self,
+            from: Data(#"{"summary":{}}"#.utf8)
+        )
+
+        #expect(empty.dailyUsageBuckets == [])
+        #expect(unavailable.dailyUsageBuckets == nil)
+        #expect(missing.dailyUsageBuckets == nil)
     }
 
     @Test
@@ -46,14 +89,15 @@ struct CodexAppServerClientTests {
             #"{"id":"read-other","result":{}}"#,
             #"{"id":1.5,"result":{}}"#,
             #"{"id":0,"result":{"userAgent":"late"}}"#,
-            Self.rateLimitsResponse(resetCount: 7)
+            Self.rateLimitsResponse(resetCount: 7),
+            Self.usageResponse()
         ])
         let client = CodexAppServerClient(makeTransport: { transport }, timeoutSeconds: 1)
 
-        let result = try await client.readRateLimits()
+        let result = try await client.readAccountSnapshot()
 
-        #expect(result.rateLimitResetCredits?.availableCount == 7)
-        #expect(await transport.sentLines.count == 3)
+        #expect(result.rateLimits.rateLimitResetCredits?.availableCount == 7)
+        #expect(await transport.sentLines.count == 4)
     }
 
     @Test
@@ -64,7 +108,7 @@ struct CodexAppServerClientTests {
         let client = CodexAppServerClient(makeTransport: { queue.next() }, timeoutSeconds: 1)
 
         do {
-            _ = try await client.readRateLimits()
+            _ = try await client.readAccountSnapshot()
             Issue.record("Expected server error")
         } catch let error as AppServerClientError {
             guard case .server(let code, let message) = error else {
@@ -88,7 +132,7 @@ struct CodexAppServerClientTests {
         let client = CodexAppServerClient(makeTransport: { queue.next() }, timeoutSeconds: 1)
 
         do {
-            _ = try await client.readRateLimits()
+            _ = try await client.readAccountSnapshot()
             Issue.record("Expected malformed response")
         } catch let error as AppServerClientError {
             guard case .malformedResponse = error else {
@@ -110,7 +154,7 @@ struct CodexAppServerClientTests {
         let client = CodexAppServerClient(makeTransport: { queue.next() }, timeoutSeconds: 1)
 
         do {
-            _ = try await client.readRateLimits()
+            _ = try await client.readAccountSnapshot()
             Issue.record("Expected closed transport")
         } catch let error as JSONLineTransportError {
             #expect(error == .closed)
@@ -130,9 +174,9 @@ struct CodexAppServerClientTests {
         let queue = TransportQueue([failed, successful])
         let client = CodexAppServerClient(makeTransport: { queue.next() }, timeoutSeconds: 1)
 
-        let result = try await client.readRateLimits()
+        let result = try await client.readAccountSnapshot()
 
-        #expect(result.rateLimitResetCredits?.availableCount == 5)
+        #expect(result.rateLimits.rateLimitResetCredits?.availableCount == 5)
         #expect(queue.makeCount == 2)
         #expect(await failed.stopCount > 0)
     }
@@ -147,7 +191,7 @@ struct CodexAppServerClientTests {
         let startedAt = clock.now
 
         do {
-            _ = try await client.readRateLimits()
+            _ = try await client.readAccountSnapshot()
             Issue.record("Expected timeout")
         } catch let error as AppServerClientError {
             guard case .timeout = error else {
@@ -176,7 +220,7 @@ struct CodexAppServerClientTests {
         let startedAt = clock.now
 
         do {
-            _ = try await client.readRateLimits()
+            _ = try await client.readAccountSnapshot()
             Issue.record("Expected timeout")
         } catch let error as AppServerClientError {
             guard case .timeout = error else {
@@ -206,7 +250,7 @@ struct CodexAppServerClientTests {
         let startedAt = clock.now
 
         do {
-            _ = try await client.readRateLimits()
+            _ = try await client.readAccountSnapshot()
             Issue.record("Expected timeout")
         } catch let error as AppServerClientError {
             guard case .timeout = error else {
@@ -231,25 +275,28 @@ struct CodexAppServerClientTests {
         let queue = TransportQueue([transport])
         let client = CodexAppServerClient(makeTransport: { queue.next() }, timeoutSeconds: 1)
 
-        let first = Task { try await client.readRateLimits() }
+        let first = Task { try await client.readAccountSnapshot() }
         await transport.waitUntilReceiveCount(1)
-        let second = Task { try await client.readRateLimits() }
+        let second = Task { try await client.readAccountSnapshot() }
         await Task<Never, Never>.yield()
         #expect(queue.makeCount == 1)
 
         await transport.enqueue(#"{"id":0,"result":{"userAgent":"test"}}"#)
         await transport.waitUntilReceiveCount(2)
         await transport.enqueue(Self.rateLimitsResponse(resetCount: 9))
+        await transport.waitUntilReceiveCount(3)
+        await transport.enqueue(Self.usageResponse())
 
         let firstResult = try await first.value
         let secondResult = try await second.value
-        #expect(firstResult.rateLimitResetCredits?.availableCount == 9)
-        #expect(secondResult.rateLimitResetCredits?.availableCount == 9)
+        #expect(firstResult.rateLimits.rateLimitResetCredits?.availableCount == 9)
+        #expect(secondResult.rateLimits.rateLimitResetCredits?.availableCount == 9)
         #expect(queue.makeCount == 1)
         #expect(await transport.sentLines.compactMap(Self.decodeMethod) == [
             "initialize",
             "initialized",
-            "account/rateLimits/read"
+            "account/rateLimits/read",
+            "account/usage/read"
         ])
     }
 
@@ -260,23 +307,25 @@ struct CodexAppServerClientTests {
         let queue = TransportQueue([first, second])
         let client = CodexAppServerClient(makeTransport: { queue.next() }, timeoutSeconds: 1)
 
-        let firstResult = try await client.readRateLimits()
+        let firstResult = try await client.readAccountSnapshot()
         await client.stop()
-        let secondResult = try await client.readRateLimits()
+        let secondResult = try await client.readAccountSnapshot()
 
-        #expect(firstResult.rateLimitResetCredits?.availableCount == 1)
-        #expect(secondResult.rateLimitResetCredits?.availableCount == 2)
+        #expect(firstResult.rateLimits.rateLimitResetCredits?.availableCount == 1)
+        #expect(secondResult.rateLimits.rateLimitResetCredits?.availableCount == 2)
         #expect(queue.makeCount == 2)
         #expect(await first.stopCount > 0)
         #expect(await first.sentLines.compactMap(Self.decodeMethod) == [
             "initialize",
             "initialized",
-            "account/rateLimits/read"
+            "account/rateLimits/read",
+            "account/usage/read"
         ])
         #expect(await second.sentLines.compactMap(Self.decodeMethod) == [
             "initialize",
             "initialized",
-            "account/rateLimits/read"
+            "account/rateLimits/read",
+            "account/usage/read"
         ])
     }
 
@@ -287,13 +336,13 @@ struct CodexAppServerClientTests {
         let queue = TransportQueue([stopping, resurrected])
         let client = CodexAppServerClient(makeTransport: { queue.next() }, timeoutSeconds: 1)
 
-        let initializing = Task { try await client.readRateLimits() }
+        let initializing = Task { try await client.readAccountSnapshot() }
         await stopping.waitUntilStartEntered()
         let stop = Task { await client.stop() }
         await stopping.waitUntilStopStarted()
 
         Self.expectCancellation(await initializing.result)
-        let readDuringStop = await Task { try await client.readRateLimits() }.result
+        let readDuringStop = await Task { try await client.readAccountSnapshot() }.result
 
         Self.expectCancellation(readDuringStop)
         #expect(queue.makeCount == 1)
@@ -311,13 +360,13 @@ struct CodexAppServerClientTests {
         let queue = TransportQueue([stopping, resurrected])
         let client = CodexAppServerClient(makeTransport: { queue.next() }, timeoutSeconds: 1)
 
-        let reading = Task { try await client.readRateLimits() }
+        let reading = Task { try await client.readAccountSnapshot() }
         await stopping.waitUntilReceiveCount(2)
         let stop = Task { await client.stop() }
         await stopping.waitUntilStopStarted()
 
         Self.expectCancellation(await reading.result)
-        let readDuringStop = await Task { try await client.readRateLimits() }.result
+        let readDuringStop = await Task { try await client.readAccountSnapshot() }.result
 
         Self.expectCancellation(readDuringStop)
         #expect(queue.makeCount == 1)
@@ -334,11 +383,11 @@ struct CodexAppServerClientTests {
         let resurrected = ScriptedJSONLineTransport(lines: Self.successLines(resetCount: 2))
         let queue = TransportQueue([stopping, resurrected])
         let client = CodexAppServerClient(makeTransport: { queue.next() }, timeoutSeconds: 1)
-        _ = try await client.readRateLimits()
+        _ = try await client.readAccountSnapshot()
 
         let stop = Task { await client.stop() }
         await stopping.waitUntilStopStarted()
-        let readDuringStop = await Task { try await client.readRateLimits() }.result
+        let readDuringStop = await Task { try await client.readAccountSnapshot() }.result
 
         Self.expectCancellation(readDuringStop)
         #expect(queue.makeCount == 1)
@@ -351,7 +400,9 @@ struct CodexAppServerClientTests {
         let transport = StopAwareScriptedTransport(lines: [
             #"{"id":0,"result":{"userAgent":"test"}}"#,
             Self.rateLimitsResponse(resetCount: 4),
-            Self.rateLimitsResponse(resetCount: 5)
+            Self.usageResponse(tokens: 4_000_000),
+            Self.rateLimitsResponse(resetCount: 5),
+            Self.usageResponse(tokens: 5_000_000)
         ])
         let queue = TransportQueue([transport])
         let sleeper = CancellationReturningSleeper()
@@ -363,19 +414,21 @@ struct CodexAppServerClientTests {
             }
         )
 
-        let first = try await client.readRateLimits()
-        let second = try await client.readRateLimits()
+        let first = try await client.readAccountSnapshot()
+        let second = try await client.readAccountSnapshot()
 
-        #expect(first.rateLimitResetCredits?.availableCount == 4)
-        #expect(second.rateLimitResetCredits?.availableCount == 5)
+        #expect(first.rateLimits.rateLimitResetCredits?.availableCount == 4)
+        #expect(second.rateLimits.rateLimitResetCredits?.availableCount == 5)
         #expect(queue.makeCount == 1)
         #expect(await transport.stopCount == 0)
-        #expect(await sleeper.returnCount == 3)
+        #expect(await sleeper.returnCount == 5)
         #expect(await transport.sentLines.compactMap(Self.decodeMethod) == [
             "initialize",
             "initialized",
             "account/rateLimits/read",
-            "account/rateLimits/read"
+            "account/usage/read",
+            "account/rateLimits/read",
+            "account/usage/read"
         ])
     }
 
@@ -388,7 +441,7 @@ struct CodexAppServerClientTests {
         let fresh = ScriptedJSONLineTransport(lines: Self.successLines(resetCount: 2))
         let queue = TransportQueue([stopping, fresh])
         let client = CodexAppServerClient(makeTransport: { queue.next() }, timeoutSeconds: 1)
-        let reading = Task { try await client.readRateLimits() }
+        let reading = Task { try await client.readAccountSnapshot() }
         await stopping.waitUntilReceiveCount(2)
 
         let firstStop = Task { await client.stop() }
@@ -415,16 +468,21 @@ struct CodexAppServerClientTests {
 
         #expect(await secondProbe.isFinished)
         #expect(await stopping.stopCount == 1)
-        let result = try await client.readRateLimits()
-        #expect(result.rateLimitResetCredits?.availableCount == 2)
+        let result = try await client.readAccountSnapshot()
+        #expect(result.rateLimits.rateLimitResetCredits?.availableCount == 2)
         #expect(queue.makeCount == 2)
     }
 
     private static func successLines(resetCount: Int) -> [String] {
         [
             #"{"id":0,"result":{"userAgent":"test"}}"#,
-            rateLimitsResponse(resetCount: resetCount)
+            rateLimitsResponse(resetCount: resetCount),
+            usageResponse()
         ]
+    }
+
+    private static func usageResponse(tokens: Int64 = 5_000_000) -> String {
+        #"{"id":2,"result":{"dailyUsageBuckets":[{"startDate":"2026-07-16","tokens":\#(tokens)}],"summary":{}}}"#
     }
 
     private static func serverErrorLines(code: Int, message: String) -> [String] {
@@ -450,7 +508,7 @@ struct CodexAppServerClientTests {
     }
 
     private static func expectCancellation(
-        _ result: Result<RateLimitsReadResponse, any Error>,
+        _ result: Result<CodexAccountReadResponse, any Error>,
         sourceLocation: SourceLocation = #_sourceLocation
     ) {
         switch result {

@@ -4,10 +4,20 @@ enum AppServerMethod: String, CaseIterable, Sendable {
     case initialize
     case initialized
     case rateLimitsRead = "account/rateLimits/read"
+    case usageRead = "account/usage/read"
 }
 
 protocol RateLimitsReading: Sendable {
     func readRateLimits() async throws -> RateLimitsReadResponse
+}
+
+struct CodexAccountReadResponse: Sendable {
+    let rateLimits: RateLimitsReadResponse
+    let usage: AccountUsageReadResponse?
+}
+
+protocol CodexAccountReading: Sendable {
+    func readAccountSnapshot() async throws -> CodexAccountReadResponse
 }
 
 enum AppServerClientError: LocalizedError, Equatable {
@@ -113,7 +123,7 @@ private actor ResponseOutcomeGate {
     }
 }
 
-actor CodexAppServerClient: RateLimitsReading {
+actor CodexAppServerClient: CodexAccountReading, RateLimitsReading {
     private enum LifecycleState {
         case active(generation: UInt64)
         case stopping(generation: UInt64, task: Task<Void, Never>?)
@@ -127,7 +137,7 @@ actor CodexAppServerClient: RateLimitsReading {
     private struct InFlightRead {
         let id: UInt64
         let generation: UInt64
-        let task: Task<RateLimitsReadResponse, any Error>
+        let task: Task<CodexAccountReadResponse, any Error>
     }
 
     private let makeTransport: @Sendable () -> any JSONLineTransport
@@ -150,7 +160,7 @@ actor CodexAppServerClient: RateLimitsReading {
         self.timeoutSleep = timeoutSleep
     }
 
-    func readRateLimits() async throws -> RateLimitsReadResponse {
+    func readAccountSnapshot() async throws -> CodexAccountReadResponse {
         guard case .active(let generation) = lifecycle else {
             throw CancellationError()
         }
@@ -174,6 +184,10 @@ actor CodexAppServerClient: RateLimitsReading {
             clearInFlightRead(id: readID, generation: generation)
             throw error
         }
+    }
+
+    func readRateLimits() async throws -> RateLimitsReadResponse {
+        try await readAccountSnapshot().rateLimits
     }
 
     func stop() async {
@@ -207,7 +221,7 @@ actor CodexAppServerClient: RateLimitsReading {
         }
     }
 
-    private func readWithOneRetry(generation: UInt64) async throws -> RateLimitsReadResponse {
+    private func readWithOneRetry(generation: UInt64) async throws -> CodexAccountReadResponse {
         for attempt in 0..<2 {
             try ensureActive(generation: generation)
             do {
@@ -223,20 +237,39 @@ actor CodexAppServerClient: RateLimitsReading {
         throw AppServerClientError.malformedResponse
     }
 
-    private func readOnce(generation: UInt64) async throws -> RateLimitsReadResponse {
+    private func readOnce(generation: UInt64) async throws -> CodexAccountReadResponse {
         let transport = try await initializedTransport(generation: generation)
         try ensureCurrent(transport, generation: generation)
         try await transport.send(
             #"{"method":"\#(AppServerMethod.rateLimitsRead.rawValue)","id":1,"params":null}"#
         )
         try ensureCurrent(transport, generation: generation)
-        let response = try await waitForResponse(
+        let rateLimits = try await waitForResponse(
             id: 1,
             result: RateLimitsReadResponse.self,
             transport: transport
         )
         try ensureCurrent(transport, generation: generation)
-        return response
+
+        do {
+            try await transport.send(
+                #"{"method":"\#(AppServerMethod.usageRead.rawValue)","id":2,"params":null}"#
+            )
+            try ensureCurrent(transport, generation: generation)
+            let usage = try await waitForResponse(
+                id: 2,
+                result: AccountUsageReadResponse.self,
+                transport: transport
+            )
+            try ensureCurrent(transport, generation: generation)
+            return CodexAccountReadResponse(rateLimits: rateLimits, usage: usage)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try ensureActive(generation: generation)
+            await resetTransport(generation: generation)
+            return CodexAccountReadResponse(rateLimits: rateLimits, usage: nil)
+        }
     }
 
     private func initializedTransport(generation: UInt64) async throws -> any JSONLineTransport {

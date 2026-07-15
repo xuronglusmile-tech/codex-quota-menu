@@ -48,12 +48,12 @@ for source_file in "${SWIFT_FILES[@]}"; do
     fail "send reference outside allowed client: $source_file"
   fi
 done
-test "$GLOBAL_SEND_REFERENCE_COUNT" -eq 3 \
-  || fail "Sources must contain exactly three send references; found $GLOBAL_SEND_REFERENCE_COUNT"
+test "$GLOBAL_SEND_REFERENCE_COUNT" -eq 4 \
+  || fail "Sources must contain exactly four send references; found $GLOBAL_SEND_REFERENCE_COUNT"
 
 METHOD_ENUM="$(/usr/bin/sed -n '/^enum AppServerMethod:/,/^}/p' "$ALLOWED_CLIENT")"
 CASE_COUNT="$(printf '%s\n' "$METHOD_ENUM" | /usr/bin/grep -Ec '^[[:space:]]+case ' || true)"
-test "$CASE_COUNT" -eq 3 || fail "AppServerMethod must contain exactly three cases"
+test "$CASE_COUNT" -eq 4 || fail "AppServerMethod must contain exactly four cases"
 printf '%s\n' "$METHOD_ENUM" | /usr/bin/grep -Eq '^[[:space:]]+case initialize[[:space:]]*$' \
   || fail "initialize method is missing"
 printf '%s\n' "$METHOD_ENUM" | /usr/bin/grep -Eq '^[[:space:]]+case initialized[[:space:]]*$' \
@@ -61,6 +61,9 @@ printf '%s\n' "$METHOD_ENUM" | /usr/bin/grep -Eq '^[[:space:]]+case initialized[
 printf '%s\n' "$METHOD_ENUM" | /usr/bin/grep -Eq \
   '^[[:space:]]+case rateLimitsRead = "account/rateLimits/read"[[:space:]]*$' \
   || fail "account/rateLimits/read method is missing"
+printf '%s\n' "$METHOD_ENUM" | /usr/bin/grep -Eq \
+  '^[[:space:]]+case usageRead = "account/usage/read"[[:space:]]*$' \
+  || fail "account/usage/read method is missing"
 
 if printf '%s\n' "$METHOD_ENUM" | /usr/bin/grep -Eiq '(consume|redeem|write)'; then
   fail "consume/redeem/write AppServer method found"
@@ -75,9 +78,9 @@ SEND_BLOCKS="$(/usr/bin/awk '
   inSend { print }
   inSend && /^[[:space:]]*\)[[:space:]]*$/ { inSend = 0 }
   END {
-    if (inSend || count != 3) exit 1
+    if (inSend || count != 4) exit 1
   }
-' "$ALLOWED_CLIENT")" || fail "could not isolate the three send payloads"
+' "$ALLOWED_CLIENT")" || fail "could not isolate the four send payloads"
 
 NORMALIZED_SEND_LINES="$(printf '%s\n' "$SEND_BLOCKS" \
   | /usr/bin/sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
@@ -87,19 +90,21 @@ SEND_OPENER_COUNT="$(printf '%s\n' "$NORMALIZED_SEND_LINES" \
   | /usr/bin/grep -Ec '^try await [A-Za-z_][A-Za-z0-9_]*\.send\($' || true)"
 SEND_CLOSER_COUNT="$(printf '%s\n' "$NORMALIZED_SEND_LINES" \
   | /usr/bin/grep -Ec '^\)$' || true)"
-test "$NONEMPTY_SEND_LINE_COUNT" -eq 9 \
-  || fail "send calls must contain only the three exact payloads"
-test "$SEND_OPENER_COUNT" -eq 3 \
+test "$NONEMPTY_SEND_LINE_COUNT" -eq 12 \
+  || fail "send calls must contain only the four exact payloads"
+test "$SEND_OPENER_COUNT" -eq 4 \
   || fail "send calls must use the exact audited call shape"
-test "$SEND_CLOSER_COUNT" -eq 3 \
+test "$SEND_CLOSER_COUNT" -eq 4 \
   || fail "send calls must use the exact audited call shape"
 
 EXPECTED_RATE_LIMITS='#"{"method":"\#(AppServerMethod.rateLimitsRead.rawValue)","id":1,"params":null}"#'
+EXPECTED_USAGE='#"{"method":"\#(AppServerMethod.usageRead.rawValue)","id":2,"params":null}"#'
 EXPECTED_INITIALIZE='#"{"method":"\#(AppServerMethod.initialize.rawValue)","id":0,"params":{"clientInfo":{"name":"codex_quota_menu","title":"Codex Quota Menu","version":"0.1.0"}}}"#'
 EXPECTED_INITIALIZED='#"{"method":"\#(AppServerMethod.initialized.rawValue)","params":{}}"#'
 
 for expected_payload in \
   "$EXPECTED_RATE_LIMITS" \
+  "$EXPECTED_USAGE" \
   "$EXPECTED_INITIALIZE" \
   "$EXPECTED_INITIALIZED"; do
   PAYLOAD_COUNT="$(printf '%s\n' "$NORMALIZED_SEND_LINES" \
@@ -110,7 +115,7 @@ done
 
 METHOD_KEY_COUNT="$(printf '%s\n' "$NORMALIZED_SEND_LINES" \
   | /usr/bin/grep -Foc '"method"' || true)"
-test "$METHOD_KEY_COUNT" -eq 3 \
+test "$METHOD_KEY_COUNT" -eq 4 \
   || fail "dynamic or additional outbound method found"
 
 if /usr/bin/grep -REni \
