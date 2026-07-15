@@ -32,8 +32,12 @@ The app uses the Codex executable bundled in `/Applications/ChatGPT.app`, reuses
 
 ## Privacy
 
-The app does not read browser cookies, ChatGPT credentials, Codex authentication files, or the Codex state database. It stores only the latest display snapshot and SHA-256 notification identifiers under `~/Library/Application Support/Codex Quota Menu`.
+The app does not read browser cookies, ChatGPT credentials, Codex authentication files, or the Codex state database. It stores only the latest display snapshot under `~/Library/Application Support/Codex Quota Menu`. SHA-256 notification identifiers and preference flags are stored in the app's standard UserDefaults domain, `local.scott.CodexQuotaMenu`.
 
 ## Uninstall
 
-Quit the menu app, disable “登录时启动”, move `/Applications/Codex Quota Menu.app` to Trash, and remove `~/Library/Application Support/Codex Quota Menu` if the cached display data is no longer wanted.
+First disable “到期通知” so the app removes its pending owned notification requests. Then disable “登录时启动”. Quit the menu app, move `/Applications/Codex Quota Menu.app` to Trash, and remove `~/Library/Application Support/Codex Quota Menu` if the cached display data is no longer wanted. Finally remove the notification hashes and preference flags from the defaults domain:
+
+```bash
+defaults delete local.scott.CodexQuotaMenu
+```

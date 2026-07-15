@@ -393,10 +393,32 @@ struct PackagingContractTests {
         #expect(readme.contains("ChatGPT credentials"))
         #expect(readme.contains("Codex authentication files"))
         #expect(readme.contains("Codex state database"))
+        #expect(readme.contains("latest display snapshot"))
         #expect(readme.contains("SHA-256 notification identifiers"))
+        #expect(readme.contains("standard UserDefaults domain"))
+        #expect(readme.contains("local.scott.CodexQuotaMenu"))
+        #expect(readme.contains("disable “到期通知”"))
+        #expect(readme.contains("pending owned notification requests"))
         #expect(readme.contains("disable “登录时启动”"))
         #expect(readme.contains("/Applications/Codex Quota Menu.app"))
         #expect(readme.contains("~/Library/Application Support/Codex Quota Menu"))
+        #expect(readme.contains("defaults delete local.scott.CodexQuotaMenu"))
+
+        let disableNotifications = try #require(readme.range(of: "disable “到期通知”"))
+        let disableLogin = try #require(readme.range(of: "disable “登录时启动”"))
+        let quit = try #require(readme.range(of: "Quit the menu app", options: .backwards))
+        let removeApp = try #require(readme.range(of: "move `/Applications/Codex Quota Menu.app`"))
+        let removeCache = try #require(
+            readme.range(of: "remove `~/Library/Application Support/Codex Quota Menu`")
+        )
+        let removeDefaults = try #require(
+            readme.range(of: "defaults delete local.scott.CodexQuotaMenu")
+        )
+        #expect(disableNotifications.lowerBound < disableLogin.lowerBound)
+        #expect(disableLogin.lowerBound < quit.lowerBound)
+        #expect(quit.lowerBound < removeApp.lowerBound)
+        #expect(removeApp.lowerBound < removeCache.lowerBound)
+        #expect(removeCache.lowerBound < removeDefaults.lowerBound)
     }
 
     @Test
