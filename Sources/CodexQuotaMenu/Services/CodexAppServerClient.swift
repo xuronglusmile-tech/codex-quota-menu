@@ -7,10 +7,6 @@ enum AppServerMethod: String, CaseIterable, Sendable {
     case usageRead = "account/usage/read"
 }
 
-protocol RateLimitsReading: Sendable {
-    func readRateLimits() async throws -> RateLimitsReadResponse
-}
-
 struct CodexAccountReadResponse: Sendable {
     let rateLimits: RateLimitsReadResponse
     let usage: AccountUsageReadResponse?
@@ -123,7 +119,7 @@ private actor ResponseOutcomeGate {
     }
 }
 
-actor CodexAppServerClient: CodexAccountReading, RateLimitsReading {
+actor CodexAppServerClient: CodexAccountReading {
     private enum LifecycleState {
         case active(generation: UInt64)
         case stopping(generation: UInt64, task: Task<Void, Never>?)
@@ -184,10 +180,6 @@ actor CodexAppServerClient: CodexAccountReading, RateLimitsReading {
             clearInFlightRead(id: readID, generation: generation)
             throw error
         }
-    }
-
-    func readRateLimits() async throws -> RateLimitsReadResponse {
-        try await readAccountSnapshot().rateLimits
     }
 
     func stop() async {

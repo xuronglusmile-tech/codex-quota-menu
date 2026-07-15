@@ -5,6 +5,27 @@ import Testing
 @Suite
 struct QuotaResponseMapperTests {
     @Test
+    func testAttachesMonthlyUsageWithoutChangingQuotaData() throws {
+        let monthlyUsage = MonthlyUsage(
+            monthStart: Date(timeIntervalSince1970: 1_783_958_400),
+            tokens: 5_000_000,
+            fetchedAt: Date(timeIntervalSince1970: 1_784_038_400)
+        )
+
+        let snapshot = try QuotaResponseMapper.map(
+            Self.makeResponse(
+                resetCredits: WireResetCreditsSummary(availableCount: 2, credits: [])
+            ),
+            monthlyUsage: monthlyUsage,
+            fetchedAt: monthlyUsage.fetchedAt
+        )
+
+        #expect(snapshot.monthlyUsage == monthlyUsage)
+        #expect(snapshot.windows.isEmpty == false)
+        #expect(snapshot.availableResetCount == 2)
+    }
+
+    @Test
     func testMapsWindowsCountAndCreditExpirationWithoutPersistingBackendID() throws {
         let data = Data(Self.responseJSON.utf8)
         let response = try JSONDecoder().decode(RateLimitsReadResponse.self, from: data)

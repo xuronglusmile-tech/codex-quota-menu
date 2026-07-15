@@ -8,7 +8,10 @@ struct QuotaReaderTests {
     func testReaderUsesInjectedTimeForFetchedAt() async throws {
         let fixed = Date(timeIntervalSince1970: 1_784_038_400)
         let reader = LiveQuotaReader(
-            client: StubRateLimitsReader(response: Self.response),
+            client: StubCodexAccountReader(response: .init(
+                rateLimits: Self.response,
+                usage: nil
+            )),
             now: { fixed }
         )
 
@@ -16,6 +19,67 @@ struct QuotaReaderTests {
 
         #expect(snapshot.fetchedAt == fixed)
         #expect(snapshot.availableResetCount == 2)
+    }
+
+    @Test
+    func testReaderAttachesCurrentMonthUsage() async throws {
+        let fixed = Date(timeIntervalSince1970: 1_783_958_400)
+        let reader = LiveQuotaReader(
+            client: StubCodexAccountReader(response: .init(
+                rateLimits: Self.response,
+                usage: AccountUsageReadResponse(
+                    dailyUsageBuckets: [
+                        .init(startDate: "2026-07-01", tokens: 2_000_000),
+                        .init(startDate: "2026-07-16", tokens: 3_000_000)
+                    ],
+                    summary: Self.emptyUsageSummary
+                )
+            )),
+            now: { fixed },
+            calendar: Self.shanghaiCalendar
+        )
+
+        let snapshot = try await reader.read()
+
+        #expect(snapshot.monthlyUsage?.tokens == 5_000_000)
+        #expect(snapshot.windows.isEmpty == false)
+        #expect(snapshot.availableResetCount == 2)
+    }
+
+    @Test
+    func testNilOrInvalidUsageDoesNotRemoveRateLimits() async throws {
+        let nilUsage = LiveQuotaReader(
+            client: StubCodexAccountReader(response: .init(
+                rateLimits: Self.response,
+                usage: nil
+            )),
+            now: { .distantPast }
+        )
+        let invalidUsage = LiveQuotaReader(
+            client: StubCodexAccountReader(response: .init(
+                rateLimits: Self.response,
+                usage: .init(
+                    dailyUsageBuckets: [.init(startDate: "bad", tokens: 1)],
+                    summary: Self.emptyUsageSummary
+                )
+            )),
+            now: { .distantPast }
+        )
+        let nilBuckets = LiveQuotaReader(
+            client: StubCodexAccountReader(response: .init(
+                rateLimits: Self.response,
+                usage: .init(
+                    dailyUsageBuckets: nil,
+                    summary: Self.emptyUsageSummary
+                )
+            )),
+            now: { .distantPast }
+        )
+
+        #expect(try await nilUsage.read().monthlyUsage == nil)
+        #expect(try await invalidUsage.read().monthlyUsage == nil)
+        #expect(try await nilBuckets.read().monthlyUsage == nil)
+        #expect(try await nilUsage.read().windows.isEmpty == false)
     }
 
     @Test
@@ -31,7 +95,10 @@ struct QuotaReaderTests {
             rateLimitResetCredits: nil
         )
         let reader = LiveQuotaReader(
-            client: StubRateLimitsReader(response: response),
+            client: StubCodexAccountReader(response: .init(
+                rateLimits: response,
+                usage: nil
+            )),
             now: { .distantPast }
         )
 
@@ -209,6 +276,20 @@ struct QuotaReaderTests {
         rateLimitsByLimitId: nil,
         rateLimitResetCredits: WireResetCreditsSummary(availableCount: 2, credits: [])
     )
+
+    private static let emptyUsageSummary = WireAccountUsageSummary(
+        currentStreakDays: nil,
+        lifetimeTokens: nil,
+        longestRunningTurnSec: nil,
+        longestStreakDays: nil,
+        peakDailyTokens: nil
+    )
+
+    private static var shanghaiCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        return calendar
+    }
 }
 
 private struct ProductionClientInvocation: Equatable {
@@ -253,7 +334,7 @@ private final class RecordingProductionClientFactory: @unchecked Sendable {
         lock.withLock { storedClients }
     }
 
-    func make(url: URL, arguments: [String]) -> any ProductionRateLimitsClient {
+    func make(url: URL, arguments: [String]) -> any ProductionAccountClient {
         let client = RecordingProductionClient(response: response)
         lock.withLock {
             storedInvocations.append(
@@ -265,7 +346,7 @@ private final class RecordingProductionClientFactory: @unchecked Sendable {
     }
 }
 
-private actor RecordingProductionClient: ProductionRateLimitsClient {
+private actor RecordingProductionClient: ProductionAccountClient {
     private let response: RateLimitsReadResponse
     private(set) var readCount = 0
     private(set) var stopCount = 0
@@ -274,9 +355,9 @@ private actor RecordingProductionClient: ProductionRateLimitsClient {
         self.response = response
     }
 
-    func readRateLimits() async throws -> RateLimitsReadResponse {
+    func readAccountSnapshot() async throws -> CodexAccountReadResponse {
         readCount += 1
-        return response
+        return CodexAccountReadResponse(rateLimits: response, usage: nil)
     }
 
     func stop() async {
@@ -286,10 +367,10 @@ private actor RecordingProductionClient: ProductionRateLimitsClient {
 
 private final class QueuedProductionClientFactory: @unchecked Sendable {
     private let lock = NSLock()
-    private var clients: [any ProductionRateLimitsClient]
+    private var clients: [any ProductionAccountClient]
     private var storedInvocations: [ProductionClientInvocation] = []
 
-    init(clients: [any ProductionRateLimitsClient]) {
+    init(clients: [any ProductionAccountClient]) {
         self.clients = clients
     }
 
@@ -297,7 +378,7 @@ private final class QueuedProductionClientFactory: @unchecked Sendable {
         lock.withLock { storedInvocations }
     }
 
-    func make(url: URL, arguments: [String]) -> any ProductionRateLimitsClient {
+    func make(url: URL, arguments: [String]) -> any ProductionAccountClient {
         lock.withLock {
             storedInvocations.append(
                 ProductionClientInvocation(executableURL: url, arguments: arguments)
@@ -308,7 +389,7 @@ private final class QueuedProductionClientFactory: @unchecked Sendable {
     }
 }
 
-private actor ControllableProductionClient: ProductionRateLimitsClient {
+private actor ControllableProductionClient: ProductionAccountClient {
     private let response: RateLimitsReadResponse
     private let suspendRead: Bool
     private let suspendStop: Bool
@@ -330,7 +411,7 @@ private actor ControllableProductionClient: ProductionRateLimitsClient {
         self.suspendStop = suspendStop
     }
 
-    func readRateLimits() async throws -> RateLimitsReadResponse {
+    func readAccountSnapshot() async throws -> CodexAccountReadResponse {
         readCount += 1
         let waiters = readStartWaiters
         readStartWaiters.removeAll()
@@ -340,7 +421,7 @@ private actor ControllableProductionClient: ProductionRateLimitsClient {
                 readContinuation = continuation
             }
         }
-        return response
+        return CodexAccountReadResponse(rateLimits: response, usage: nil)
     }
 
     func stop() async {
@@ -407,10 +488,10 @@ private actor ReaderCompletionProbe {
     }
 }
 
-private struct StubRateLimitsReader: RateLimitsReading {
-    let response: RateLimitsReadResponse
+private struct StubCodexAccountReader: CodexAccountReading {
+    let response: CodexAccountReadResponse
 
-    func readRateLimits() async throws -> RateLimitsReadResponse {
+    func readAccountSnapshot() async throws -> CodexAccountReadResponse {
         response
     }
 }

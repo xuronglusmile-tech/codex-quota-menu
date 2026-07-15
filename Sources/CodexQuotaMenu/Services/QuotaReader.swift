@@ -6,30 +6,48 @@ protocol QuotaReading: Sendable {
 }
 
 struct LiveQuotaReader: QuotaReading {
-    let client: any RateLimitsReading
+    let client: any CodexAccountReading
     let now: @Sendable () -> Date
+    let calendar: Calendar
 
     init(
-        client: any RateLimitsReading,
-        now: @escaping @Sendable () -> Date = { Date() }
+        client: any CodexAccountReading,
+        now: @escaping @Sendable () -> Date = { Date() },
+        calendar: Calendar = .current
     ) {
         self.client = client
         self.now = now
+        self.calendar = calendar
     }
 
     func read() async throws -> QuotaSnapshot {
-        let response = try await client.readRateLimits()
-        return try QuotaResponseMapper.map(response, fetchedAt: now())
+        let response = try await client.readAccountSnapshot()
+        let fetchedAt = now()
+        let monthlyUsage: MonthlyUsage?
+        if let buckets = response.usage?.dailyUsageBuckets {
+            monthlyUsage = try? MonthlyUsageMapper.map(
+                buckets: buckets,
+                now: fetchedAt,
+                calendar: calendar
+            )
+        } else {
+            monthlyUsage = nil
+        }
+        return try QuotaResponseMapper.map(
+            response.rateLimits,
+            monthlyUsage: monthlyUsage,
+            fetchedAt: fetchedAt
+        )
     }
 
     func shutdown() async {}
 }
 
-protocol ProductionRateLimitsClient: RateLimitsReading, AnyObject {
+protocol ProductionAccountClient: CodexAccountReading, AnyObject {
     func stop() async
 }
 
-extension CodexAppServerClient: ProductionRateLimitsClient {}
+extension CodexAppServerClient: ProductionAccountClient {}
 
 actor ProductionQuotaReader: QuotaReading {
     private enum LifecycleState {
@@ -40,11 +58,11 @@ actor ProductionQuotaReader: QuotaReading {
     typealias ClientFactory = @Sendable (
         URL,
         [String]
-    ) -> any ProductionRateLimitsClient
+    ) -> any ProductionAccountClient
 
     private struct OwnedClient {
         let generation: UInt64
-        let value: any ProductionRateLimitsClient
+        let value: any ProductionAccountClient
     }
 
     private let locator: any CodexExecutableLocating
@@ -122,7 +140,7 @@ actor ProductionQuotaReader: QuotaReading {
 
     private func client(
         for generation: UInt64
-    ) throws -> any ProductionRateLimitsClient {
+    ) throws -> any ProductionAccountClient {
         if let client {
             guard client.generation == generation else {
                 throw CancellationError()

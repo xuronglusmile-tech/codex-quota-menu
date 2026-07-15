@@ -8,7 +8,11 @@ enum QuotaMappingError: LocalizedError {
 }
 
 enum QuotaResponseMapper {
-    static func map(_ response: RateLimitsReadResponse, fetchedAt: Date) throws -> QuotaSnapshot {
+    static func map(
+        _ response: RateLimitsReadResponse,
+        monthlyUsage: MonthlyUsage? = nil,
+        fetchedAt: Date
+    ) throws -> QuotaSnapshot {
         let buckets: [(keyedID: String, snapshot: WireRateLimitSnapshot)]
         if let keyed = response.rateLimitsByLimitId, !keyed.isEmpty {
             buckets = keyed.keys.sorted().compactMap { keyedID in
@@ -59,6 +63,7 @@ enum QuotaResponseMapper {
             windows: windows,
             availableResetCount: max(response.rateLimitResetCredits?.availableCount ?? 0, 0),
             resetCredits: response.rateLimitResetCredits?.credits == nil ? nil : details,
+            monthlyUsage: monthlyUsage,
             fetchedAt: fetchedAt
         )
     }
