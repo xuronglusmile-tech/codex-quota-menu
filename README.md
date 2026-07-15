@@ -30,9 +30,15 @@ Quit Codex Quota Menu before installing or updating. The installer refuses to re
 
 The app uses the Codex executable bundled in `/Applications/ChatGPT.app`, reuses its existing login, refreshes every five minutes, and never redeems a reset credit. The installer needs write access to `/Applications`, verifies a staged copy before replacement, atomically swaps it with an existing installation, verifies the installed copy, and then opens a new instance without `sudo`. If post-swap verification or launch fails, it atomically restores the previous app; if rollback itself fails, it preserves and reports the exact recovery directory.
 
+The app also reads `account/usage/read` every five minutes and sums only the
+current calendar month's date-only usage buckets. It converts total tokens into
+a GPT-5.6 Sol API-equivalent range using fixed `$2.65 / 1M` and `$8.20 / 1M`
+scenarios. This is an estimate, not an OpenAI bill or a valuation of all Plus or
+Pro subscription features.
+
 ## Privacy
 
-The app does not read browser cookies, ChatGPT credentials, Codex authentication files, or the Codex state database. It stores only the latest display snapshot under `~/Library/Application Support/Codex Quota Menu`. SHA-256 notification identifiers and preference flags are stored in the app's standard UserDefaults domain, `local.scott.CodexQuotaMenu`.
+The app does not read browser cookies, ChatGPT credentials, Codex authentication files, the Codex state database, conversation logs, or session logs. It stores only the latest display snapshot under `~/Library/Application Support/Codex Quota Menu`; monthly usage cache data is limited to the derived monthly token total, month start, and fetch time. SHA-256 notification identifiers and preference flags are stored in the app's standard UserDefaults domain, `local.scott.CodexQuotaMenu`.
 
 ## Uninstall
 

@@ -9,6 +9,37 @@ struct PackagingContractTests {
         .deletingLastPathComponent()
 
     @Test
+    func testMenuRendersIndependentMonthlyValueSectionWithoutRemovingControls() throws {
+        let menuSource = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/CodexQuotaMenu/UI/MenuBarContentView.swift"
+            ),
+            encoding: .utf8
+        )
+        let valueSource = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/CodexQuotaMenu/UI/MonthlyUsageValueSection.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(menuSource.contains("MonthlyUsageValueSection(usage: monthlyUsage)"))
+        #expect(menuSource.contains("本月使用数据暂不可用"))
+        #expect(valueSource.contains("本月 API 等价价值"))
+        #expect(valueSource.contains("Plus $20"))
+        #expect(valueSource.contains("Pro $200"))
+        #expect(valueSource.contains("$250"))
+        #expect(valueSource.contains("GPT-5.6 Sol"))
+        #expect(valueSource.contains("API 等价估算，并非实际账单"))
+        #expect(menuSource.contains("可用重置次数"))
+        #expect(menuSource.contains("登录时启动"))
+        #expect(menuSource.contains("到期通知"))
+        #expect(menuSource.contains("打开 ChatGPT"))
+        #expect(menuSource.contains("退出"))
+        #expect(menuSource.contains(".frame(width: 330)"))
+    }
+
+    @Test
     func testInfoPlistDeclaresCompleteMenuBarOnlyBundleContract() throws {
         let plist = root.appendingPathComponent("Resources/Info.plist")
         let data = try Data(contentsOf: plist)

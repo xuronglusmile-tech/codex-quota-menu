@@ -93,6 +93,15 @@ struct MenuBarContentView: View {
             }
 
             Divider()
+            if let monthlyUsage = snapshot.monthlyUsage {
+                MonthlyUsageValueSection(usage: monthlyUsage)
+            } else {
+                Text("本月使用数据暂不可用")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("本月 API 等价价值暂不可用")
+            }
+            Divider()
             HStack {
                 Text("可用重置次数")
                 Spacer()
