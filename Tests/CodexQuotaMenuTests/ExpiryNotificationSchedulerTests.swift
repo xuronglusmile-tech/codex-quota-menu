@@ -324,7 +324,34 @@ struct ExpiryNotificationSchedulerTests {
         await scheduler.reconcile(snapshot: snapshot, now: Self.now)
 
         #expect(await gateway.addAttempts.isEmpty)
-        #expect(NotificationLedger(defaults: defaults).identifiers() == [ledgerID])
+        #expect(
+            NotificationLedger(defaults: defaults).identifiers()
+                == Set([pendingID, ledgerID])
+        )
+    }
+
+    @Test
+    func testPendingDesiredRequestRecoversLedgerAcrossDelivery() async throws {
+        let defaults = Self.defaults()
+        let creditKey = String(repeating: "0", count: 64)
+        let identifier = "codex-reset-\(creditKey)"
+        let gateway = FakeUserNotificationCenterGateway(
+            permissionState: .authorized,
+            pendingIdentifiers: [identifier]
+        )
+        let scheduler = ExpiryNotificationScheduler(gateway: gateway, defaults: defaults)
+        let snapshot = Self.futureSnapshot(id: creditKey)
+
+        await scheduler.reconcile(snapshot: snapshot, now: Self.now)
+
+        #expect(await gateway.addAttempts.isEmpty)
+        #expect(NotificationLedger(defaults: defaults).identifiers() == [identifier])
+
+        try await gateway.removePendingRequests(withIdentifiers: [identifier])
+        await scheduler.reconcile(snapshot: snapshot, now: Self.now)
+
+        #expect(await gateway.addAttempts.isEmpty)
+        #expect(NotificationLedger(defaults: defaults).identifiers() == [identifier])
     }
 
     @Test

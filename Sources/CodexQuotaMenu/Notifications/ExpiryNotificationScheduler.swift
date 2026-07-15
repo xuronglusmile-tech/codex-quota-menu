@@ -309,6 +309,7 @@ actor ExpiryNotificationScheduler: ExpiryNotificationReconciling {
         }
 
         var notified = ledger.identifiers().intersection(desired)
+        notified.formUnion(pending.intersection(desired))
         guard await permissionStateUnlocked() == .authorized else {
             ledger.replace(with: notified)
             return
