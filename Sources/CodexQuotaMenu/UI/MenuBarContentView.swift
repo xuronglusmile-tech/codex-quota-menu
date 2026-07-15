@@ -81,6 +81,7 @@ struct MenuBarContentView: View {
                         value: Double(window.remainingPercent),
                         total: 100
                     )
+                    .tint(quotaTint(for: window))
                     if let resetsAt = window.resetsAt {
                         Text(
                             "重置：\(resetsAt.formatted(date: .abbreviated, time: .shortened))"
@@ -115,6 +116,18 @@ struct MenuBarContentView: View {
                 }
                 .disabled(store.isRefreshing)
             }
+        }
+    }
+
+    private func quotaTint(for window: QuotaWindow) -> Color {
+        switch QuotaProgressPresentation.band(
+            remainingPercent: window.remainingPercent,
+            durationMinutes: window.durationMinutes
+        ) {
+        case .normal: return .green
+        case .warning: return .yellow
+        case .critical: return .red
+        case nil: return .accentColor
         }
     }
 
