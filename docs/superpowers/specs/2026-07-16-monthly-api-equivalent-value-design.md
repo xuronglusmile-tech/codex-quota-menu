@@ -36,18 +36,20 @@ The new section appears after the quota windows and before reset credits:
 ```text
 本月 API 等价价值                         $13.25～$41.00
 [ green minimum ][ yellow uncertainty ]--------------------
-$0        Plus $20                                  Pro $200
+$0     Plus $20                           Pro $200      $250
 低估 $13.25    高估 $41.00
 估算区间跨过 Plus $20 · 未达到 Pro $200
 本月 5.00M tokens · GPT-5.6 Sol · API 等价估算，并非实际账单
 ```
 
-- The track is a linear `$0～$200` scale.
+- The track is a linear `$0～$250` scale. The `$250` endpoint is labeled so the
+  extra space is explicit rather than decorative.
 - The solid green segment runs from `$0` to the lower estimate.
 - The green-to-yellow segment runs from the lower to the upper estimate.
-- A red marker at `10%` represents Plus `$20`.
-- A purple marker at the right edge represents Pro `$200`.
-- If an estimate exceeds `$200`, the visual fill is clipped at the right edge,
+- A red marker at `8%` represents Plus `$20`.
+- A purple marker at `80%` represents Pro `$200`, leaving the final 20% of the
+  track as visible headroom.
+- If an estimate exceeds `$250`, the visual fill is clipped at the right edge,
   but the displayed dollar amount is not clipped.
 - The value line is independent of quota percentages. A `31%` quota value never
   controls the length or color of the dollar-value line.
@@ -224,14 +226,15 @@ mix. The range better represents the available evidence.
 
 Two benchmark bars make `$20` easier to read but would create three progress
 lines in total and conflict with the approved two-line layout. One linear
-`$0～$200` track keeps both benchmarks honest and comparable.
+`$0～$250` track keeps both benchmarks honest and comparable while placing the
+Pro `$200` reference at 80% instead of flush against the right edge.
 
 ## Error and edge-case behavior
 
 - Zero monthly tokens displays `$0.00～$0.00` and an empty value fill.
 - `dailyUsageBuckets == nil` displays an unavailable message, not zero.
 - Invalid usage data never reduces the estimate silently.
-- Values above `$200` keep their full text amount while the fill remains within
+- Values above `$250` keep their full text amount while the fill remains within
   the track.
 - Missing usage data never removes the primary quota display.
 - Existing cache files without the new optional field continue to load.
@@ -252,7 +255,8 @@ Unit and contract tests cover:
 - null buckets, malformed dates, negative tokens, and sum overflow;
 - exact estimates for zero, 1M, and 5M tokens;
 - Plus and Pro statuses below, exactly at, and crossing each benchmark;
-- value-track percentage calculation and clipping above `$200`;
+- value-track percentage calculation, including Plus at `8%`, Pro at `80%`,
+  and clipping above `$250`;
 - weekly color boundaries at `9%`, `10%`, `19%`, and `20%`, plus proof that a
   non-weekly window retains its existing tint;
 - decoding an old cache file that omits monthly usage;
