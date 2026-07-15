@@ -5,6 +5,25 @@ import Testing
 @Suite
 struct CodexExecutableLocatorTests {
     @Test
+    func testProductionDefaultsUseOnlyChatGPTBundledCodex() {
+        let bundledPath = "/Applications/ChatGPT.app/Contents/Resources/codex"
+        let locator = CodexExecutableLocator(
+            isExecutable: { $0.path != bundledPath }
+        )
+
+        #expect(locator.candidates.map(\.path) == [bundledPath])
+
+        do {
+            _ = try locator.locate()
+            Issue.record("Expected locate() to reject non-bundled Codex executables")
+        } catch is CodexExecutableNotFound {
+            // Expected actionable production error when the bundled executable is absent.
+        } catch {
+            Issue.record("Expected CodexExecutableNotFound, got \(error)")
+        }
+    }
+
+    @Test
     func testReturnsFirstExecutableCandidate() throws {
         let locator = CodexExecutableLocator(
             candidates: [

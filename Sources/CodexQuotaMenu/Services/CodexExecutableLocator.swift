@@ -16,10 +16,7 @@ struct CodexExecutableLocator: CodexExecutableLocating {
 
     init(
         candidates: [URL] = [
-            URL(fileURLWithPath: "/Applications/ChatGPT.app/Contents/Resources/codex"),
-            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/codex"),
-            URL(fileURLWithPath: "/opt/homebrew/bin/codex"),
-            URL(fileURLWithPath: "/usr/local/bin/codex")
+            URL(fileURLWithPath: "/Applications/ChatGPT.app/Contents/Resources/codex")
         ],
         isExecutable: @escaping @Sendable (URL) -> Bool = {
             FileManager.default.isExecutableFile(atPath: $0.path)
