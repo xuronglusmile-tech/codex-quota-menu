@@ -1,6 +1,18 @@
 import Darwin
 import Foundation
 
+enum ProcessJSONLineTransportError: LocalizedError, Equatable {
+    case noSigPipeConfigurationFailed(errno: Int32)
+
+    var errorDescription: String? {
+        switch self {
+        case .noSigPipeConfigurationFailed(let errorNumber):
+            "无法启动 Codex 进程：配置 F_SETNOSIGPIPE 失败（errno \(errorNumber)）。" +
+                "请重试；若问题持续，请重新启动 Codex Quota Menu。"
+        }
+    }
+}
+
 actor ProcessJSONLineTransport: JSONLineTransport {
     private enum LifecycleState {
         case stopped
@@ -26,6 +38,7 @@ actor ProcessJSONLineTransport: JSONLineTransport {
 
     private let executableURL: URL
     private let arguments: [String]
+    private let configureNoSigPipe: @Sendable (Int32) -> Int32
     private var lifecycle: LifecycleState = .stopped
     private var generationCounter: UInt64 = 0
     private var process: Process?
@@ -38,9 +51,16 @@ actor ProcessJSONLineTransport: JSONLineTransport {
     private var receiveOwnerGeneration: UInt64?
     private var receiveWaiters: [ReceiveWaiter] = []
 
-    init(executableURL: URL, arguments: [String]) {
+    init(
+        executableURL: URL,
+        arguments: [String],
+        configureNoSigPipe: @escaping @Sendable (Int32) -> Int32 = { fileDescriptor in
+            fcntl(fileDescriptor, F_SETNOSIGPIPE, 1)
+        }
+    ) {
         self.executableURL = executableURL
         self.arguments = arguments
+        self.configureNoSigPipe = configureNoSigPipe
     }
 
     func start() async throws {
@@ -153,11 +173,18 @@ actor ProcessJSONLineTransport: JSONLineTransport {
             throw error
         }
 
-        _ = fcntl(
-            inputPipe.fileHandleForWriting.fileDescriptor,
-            F_SETNOSIGPIPE,
-            1
-        )
+        guard configureNoSigPipe(inputPipe.fileHandleForWriting.fileDescriptor) != -1 else {
+            let errorNumber = errno
+            Self.cleanUpFailedLaunch(
+                process: process,
+                input: inputPipe.fileHandleForWriting,
+                output: outputPipe.fileHandleForReading,
+                terminationContinuation: terminationPair.continuation
+            )
+            throw ProcessJSONLineTransportError.noSigPipeConfigurationFailed(
+                errno: errorNumber
+            )
+        }
 
         generationCounter &+= 1
         let generation = generationCounter
@@ -261,6 +288,32 @@ actor ProcessJSONLineTransport: JSONLineTransport {
         _ = await terminationIterator.next()
         await resources.readerTask.value
         resources.process.terminationHandler = nil
+    }
+
+    private static func cleanUpFailedLaunch(
+        process: Process,
+        input: FileHandle,
+        output: FileHandle,
+        terminationContinuation: AsyncStream<Void>.Continuation
+    ) {
+        try? input.close()
+        try? output.close()
+
+        if process.isRunning {
+            _ = kill(process.processIdentifier, SIGTERM)
+        }
+
+        let deadline = Date().addingTimeInterval(0.1)
+        while process.isRunning && Date() < deadline {
+            usleep(5_000)
+        }
+
+        if process.isRunning {
+            _ = kill(process.processIdentifier, SIGKILL)
+        }
+        process.waitUntilExit()
+        process.terminationHandler = nil
+        terminationContinuation.finish()
     }
 
     private func finishStop(generation: UInt64) {
