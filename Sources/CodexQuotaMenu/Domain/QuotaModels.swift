@@ -32,7 +32,22 @@ struct QuotaSnapshot: Codable, Equatable, Sendable {
     let windows: [QuotaWindow]
     let availableResetCount: Int
     let resetCredits: [ResetCredit]?
+    let monthlyUsage: MonthlyUsage?
     let fetchedAt: Date
+
+    init(
+        windows: [QuotaWindow],
+        availableResetCount: Int,
+        resetCredits: [ResetCredit]?,
+        monthlyUsage: MonthlyUsage? = nil,
+        fetchedAt: Date
+    ) {
+        self.windows = windows
+        self.availableResetCount = availableResetCount
+        self.resetCredits = resetCredits
+        self.monthlyUsage = monthlyUsage
+        self.fetchedAt = fetchedAt
+    }
 
     var mostConstrainedRemainingPercent: Int? {
         windows.map(\.remainingPercent).min()

@@ -51,6 +51,24 @@ struct QuotaCacheTests {
     }
 
     @Test
+    func testLegacyCacheWithoutMonthlyUsageLoadsAsUnavailable() async throws {
+        try await Self.withTemporaryDirectory { directory in
+            let fileURL = directory.appendingPathComponent("quota-cache.json")
+            let legacyJSON = #"{"windows":[],"availableResetCount":0,"resetCredits":[],"fetchedAt":1000}"#
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            try Data(legacyJSON.utf8).write(to: fileURL)
+
+            let snapshot = await FileQuotaCache(fileURL: fileURL).load()
+
+            #expect(snapshot != nil)
+            #expect(snapshot?.monthlyUsage == nil)
+        }
+    }
+
+    @Test
     func testSaveCreatesMissingParentDirectory() async throws {
         try await Self.withTemporaryDirectory { rootDirectory in
             let directory = rootDirectory.appendingPathComponent("nested/cache")
@@ -125,6 +143,11 @@ struct QuotaCacheTests {
                         detail: "Available credit"
                     )
                 ],
+                monthlyUsage: MonthlyUsage(
+                    monthStart: Date(timeIntervalSince1970: 4_900),
+                    tokens: 5_000_000,
+                    fetchedAt: Date(timeIntervalSince1970: 5_000)
+                ),
                 fetchedAt: Date(timeIntervalSince1970: 5_000)
             )
 
@@ -136,8 +159,12 @@ struct QuotaCacheTests {
                 JSONSerialization.jsonObject(with: data) as? [String: Any]
             )
             #expect(Set(object.keys) == [
-                "windows", "availableResetCount", "resetCredits", "fetchedAt"
+                "windows", "availableResetCount", "resetCredits", "monthlyUsage", "fetchedAt"
             ])
+
+            let monthlyUsage = try #require(object["monthlyUsage"] as? [String: Any])
+            #expect(Set(monthlyUsage.keys) == ["monthStart", "tokens", "fetchedAt"])
+            #expect((monthlyUsage["tokens"] as? NSNumber)?.int64Value == 5_000_000)
 
             let credits = try #require(object["resetCredits"] as? [[String: Any]])
             let credit = try #require(credits.first)
