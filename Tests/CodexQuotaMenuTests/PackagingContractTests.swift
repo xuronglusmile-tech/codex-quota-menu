@@ -122,7 +122,7 @@ struct PackagingContractTests {
         #expect(auditScript.contains("consume|redeem|write"))
         #expect(auditScript.contains("find"))
         #expect(auditScript.contains("*.swift"))
-        #expect(auditScript.contains("GLOBAL_SEND_CALL_COUNT"))
+        #expect(auditScript.contains("GLOBAL_SEND_REFERENCE_COUNT"))
         #expect(auditScript.contains("send call outside allowed client"))
 
         let clientSource = try String(
@@ -201,6 +201,51 @@ struct PackagingContractTests {
         #expect(rejected.status != 0)
         #expect(rejected.output.contains("send call outside allowed client"))
         #expect(rejected.output.contains("InjectedDynamicSend.swift"))
+    }
+
+    @Test
+    func testGlobalOutboundAuditRejectsBoundSendReferenceInAnotherSwiftFile() throws {
+        let auditScriptURL = root.appendingPathComponent("scripts/audit-outbound-methods.sh")
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let fixtureRoot = temporaryDirectory.appendingPathComponent("Sources", isDirectory: true)
+        let clientDirectory = fixtureRoot.appendingPathComponent(
+            "CodexQuotaMenu/Services",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: clientDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.copyItem(
+            at: root.appendingPathComponent(
+                "Sources/CodexQuotaMenu/Services/CodexAppServerClient.swift"
+            ),
+            to: clientDirectory.appendingPathComponent("CodexAppServerClient.swift")
+        )
+
+        let injectedSource = """
+        func injectedReference(
+            transport: JSONLineTransport,
+            dynamicPayload: String
+        ) async throws {
+            let emit: (String) async throws -> Void = transport.send
+            try await emit(dynamicPayload)
+        }
+        """
+        try Data(injectedSource.utf8).write(
+            to: fixtureRoot.appendingPathComponent("InjectedSendReference.swift")
+        )
+
+        let rejected = try runCapturing(
+            executable: auditScriptURL.path,
+            arguments: [fixtureRoot.path]
+        )
+        #expect(rejected.status != 0)
+        #expect(rejected.output.contains("send reference outside allowed client"))
+        #expect(rejected.output.contains("InjectedSendReference.swift"))
     }
 
     @Test

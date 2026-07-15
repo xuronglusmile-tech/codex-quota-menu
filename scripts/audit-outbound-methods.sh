@@ -17,6 +17,13 @@ count_send_calls() {
   } | /usr/bin/wc -l | /usr/bin/tr -d '[:space:]'
 }
 
+count_send_references() {
+  local source_file="$1"
+  {
+    /usr/bin/grep -Eo '\.[[:space:]]*send([^[:alnum:]_]|$)' "$source_file" || true
+  } | /usr/bin/wc -l | /usr/bin/tr -d '[:space:]'
+}
+
 test "$#" -le 1 || fail "expected at most one source root"
 test -d "$SOURCE_ROOT" || fail "missing source root: $SOURCE_ROOT"
 SOURCE_ROOT="$(cd "$SOURCE_ROOT" && pwd)"
@@ -29,16 +36,20 @@ while IFS= read -r -d '' source_file; do
 done < <(/usr/bin/find "$SOURCE_ROOT" -type f -name '*.swift' -print0)
 test "${#SWIFT_FILES[@]}" -gt 0 || fail "no Swift sources found"
 
-GLOBAL_SEND_CALL_COUNT=0
+GLOBAL_SEND_REFERENCE_COUNT=0
 for source_file in "${SWIFT_FILES[@]}"; do
-  FILE_SEND_CALL_COUNT="$(count_send_calls "$source_file")"
-  GLOBAL_SEND_CALL_COUNT=$((GLOBAL_SEND_CALL_COUNT + FILE_SEND_CALL_COUNT))
-  if test "$source_file" != "$ALLOWED_CLIENT" && test "$FILE_SEND_CALL_COUNT" -ne 0; then
-    fail "send call outside allowed client: $source_file"
+  FILE_SEND_REFERENCE_COUNT="$(count_send_references "$source_file")"
+  GLOBAL_SEND_REFERENCE_COUNT=$((GLOBAL_SEND_REFERENCE_COUNT + FILE_SEND_REFERENCE_COUNT))
+  if test "$source_file" != "$ALLOWED_CLIENT" && test "$FILE_SEND_REFERENCE_COUNT" -ne 0; then
+    FILE_SEND_CALL_COUNT="$(count_send_calls "$source_file")"
+    if test "$FILE_SEND_CALL_COUNT" -ne 0; then
+      fail "send call outside allowed client: $source_file"
+    fi
+    fail "send reference outside allowed client: $source_file"
   fi
 done
-test "$GLOBAL_SEND_CALL_COUNT" -eq 3 \
-  || fail "Sources must contain exactly three send call sites; found $GLOBAL_SEND_CALL_COUNT"
+test "$GLOBAL_SEND_REFERENCE_COUNT" -eq 3 \
+  || fail "Sources must contain exactly three send references; found $GLOBAL_SEND_REFERENCE_COUNT"
 
 METHOD_ENUM="$(/usr/bin/sed -n '/^enum AppServerMethod:/,/^}/p' "$ALLOWED_CLIENT")"
 CASE_COUNT="$(printf '%s\n' "$METHOD_ENUM" | /usr/bin/grep -Ec '^[[:space:]]+case ' || true)"
