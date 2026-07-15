@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-SUPPORT_DIR="$ROOT/.build/codex-quota-menu-support"
+SUPPORT_DIR="$ROOT/.build/codex-quota-menu-support/test"
 SWIFTPM_DIR="$SUPPORT_DIR/swiftpm"
 export CLANG_MODULE_CACHE_PATH="$SUPPORT_DIR/clang-module-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$SUPPORT_DIR/swiftpm-module-cache"
@@ -15,29 +15,25 @@ mkdir -p \
   "$SWIFTPM_MODULECACHE_OVERRIDE" \
   "$SWIFTPM_DIR/cache" \
   "$SWIFTPM_DIR/config" \
-  "$SWIFTPM_DIR/security"
+  "$SWIFTPM_DIR/security" \
+  "$SUPPORT_DIR/build"
 
 SWIFT_ARGS=(
   --disable-sandbox
   --cache-path "$SWIFTPM_DIR/cache"
   --config-path "$SWIFTPM_DIR/config"
   --security-path "$SWIFTPM_DIR/security"
-  --scratch-path "$ROOT/.build"
+  --scratch-path "$SUPPORT_DIR/build"
   -Xswiftc -Xfrontend
   -Xswiftc -interface-compiler-version
   -Xswiftc -Xfrontend
   -Xswiftc "$INTERFACE_COMPILER_VERSION"
+  -Xswiftc -F/Library/Developer/CommandLineTools/Library/Developer/Frameworks
   -Xswiftc -warnings-as-errors
+  -Xlinker -rpath
+  -Xlinker /Library/Developer/CommandLineTools/Library/Developer/Frameworks
+  -Xlinker -rpath
+  -Xlinker /Library/Developer/CommandLineTools/Library/Developer/usr/lib
 )
 
-swift build -c release "${SWIFT_ARGS[@]}"
-BIN_DIR="$(swift build -c release --show-bin-path "${SWIFT_ARGS[@]}")"
-
-APP="$ROOT/dist/Codex Quota Menu.app"
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN_DIR/CodexQuotaMenu" "$APP/Contents/MacOS/CodexQuotaMenu"
-cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
-/usr/bin/codesign --force --sign - "$APP"
-
-echo "$APP"
+swift test "${SWIFT_ARGS[@]}" "$@"

@@ -7,12 +7,18 @@ Native read-only macOS menu-bar display for Codex quota windows and reset-credit
 Requires macOS 14 or later and the Apple Command Line Tools.
 
 ```bash
-swift test
+./scripts/test.sh
 ./scripts/build-app.sh
 ./scripts/verify-app.sh
 ```
 
-The build script keeps its SwiftPM and module caches under the project `.build` directory. It defaults to SDK interface compiler compatibility version `6.3.2`; set `CODEX_QUOTA_INTERFACE_COMPILER_VERSION` only when the installed SDK requires another version.
+The test and build scripts keep their SwiftPM and module caches under the project `.build` directory. They default to SDK interface compiler compatibility version `6.3.2`; set `CODEX_QUOTA_INTERFACE_COMPILER_VERSION` only when the installed SDK requires another version. The verification script runs the focused fake-client whitelist test, rebuilds the current release executable, and byte-compares it with the signed bundle executable.
+
+The real-account smoke test is opt-in and must be run only with approval:
+
+```bash
+RUN_LIVE_CODEX_TESTS=1 ./scripts/test.sh --filter LiveCodexSmokeTests
+```
 
 ## Install
 
@@ -20,7 +26,9 @@ The build script keeps its SwiftPM and module caches under the project `.build` 
 ./scripts/install-app.sh
 ```
 
-The app uses the Codex executable bundled in `/Applications/ChatGPT.app`, reuses its existing login, refreshes every five minutes, and never redeems a reset credit. The installer needs write access to `/Applications`, verifies a staged copy before replacing an existing installation, verifies the installed copy, and then opens it without `sudo`.
+Quit Codex Quota Menu before installing or updating. The installer refuses to replace a running copy and tells you to quit and retry.
+
+The app uses the Codex executable bundled in `/Applications/ChatGPT.app`, reuses its existing login, refreshes every five minutes, and never redeems a reset credit. The installer needs write access to `/Applications`, verifies a staged copy before replacement, atomically swaps it with an existing installation, verifies the installed copy, and then opens a new instance without `sudo`. If post-swap verification or launch fails, it atomically restores the previous app; if rollback itself fails, it preserves and reports the exact recovery directory.
 
 ## Privacy
 
