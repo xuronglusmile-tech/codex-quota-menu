@@ -121,8 +121,8 @@ struct MenuBarContentView: View {
     @ViewBuilder
     private func resetCredits(_ credits: [ResetCredit]?) -> some View {
         if let credits {
-            ForEach(credits) { credit in
-                resetCreditRow(credit)
+            ForEach(Array(credits.enumerated()), id: \.element.id) { item in
+                resetCreditRow(item.element, position: item.offset + 1)
             }
         } else {
             Text("到期详情暂不可用")
@@ -131,38 +131,32 @@ struct MenuBarContentView: View {
         }
     }
 
-    private func resetCreditRow(_ credit: ResetCredit) -> some View {
+    private func resetCreditRow(_ credit: ResetCredit, position: Int) -> some View {
         let urgentStatus = ResetCreditUrgency.statusText(
             expiresAt: credit.expiresAt,
             now: now()
         )
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(credit.title ?? "Full reset")
-                Spacer()
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(
-                        credit.expiresAt?.formatted(
-                            date: .abbreviated,
-                            time: .shortened
-                        ) ?? "不过期"
+        let expiration = credit.expiresAt?.formatted(
+            date: .abbreviated,
+            time: .shortened
+        ) ?? "不过期"
+
+        return HStack(alignment: .top) {
+            Text(ResetCreditRowPresentation.ordinalLabel(position: position))
+            Spacer()
+            VStack(alignment: .trailing, spacing: 1) {
+                Text("到期：\(expiration)")
+                .foregroundStyle(
+                    urgentStatus == nil ? Color.secondary : Color.orange
+                )
+                if let urgentStatus {
+                    Label(
+                        urgentStatus,
+                        systemImage: "exclamationmark.triangle.fill"
                     )
-                    .foregroundStyle(
-                        urgentStatus == nil ? Color.secondary : Color.orange
-                    )
-                    if let urgentStatus {
-                        Label(
-                            urgentStatus,
-                            systemImage: "exclamationmark.triangle.fill"
-                        )
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                    }
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
                 }
-            }
-            if let detail = credit.detail, !detail.isEmpty {
-                Text(detail)
-                    .foregroundStyle(.secondary)
             }
         }
         .font(.caption)
