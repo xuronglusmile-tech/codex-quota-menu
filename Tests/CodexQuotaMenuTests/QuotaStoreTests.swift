@@ -443,13 +443,16 @@ struct QuotaStoreTests {
         let now = Date(timeIntervalSince1970: 5_000)
         let restartSnapshot = Self.snapshot(fetchedAt: now, count: 8)
         let reader = SuspendedCleanupQuotaReader(restartSnapshot: restartSnapshot)
+        let notifications = RecordingNotifications()
+        let sleeper = ControlledStoreSleeper()
         let primaryCompletion = StopCallerProbe()
         let secondaryCompletion = StopCallerProbe()
         let store = QuotaStore(
             reader: reader,
             cache: MemoryQuotaCache(snapshot: nil),
-            notifications: RecordingNotifications(),
-            now: { now }
+            notifications: notifications,
+            now: { now },
+            sleep: { try await sleeper.sleep(seconds: $0) }
         )
 
         store.start()
@@ -480,8 +483,14 @@ struct QuotaStoreTests {
 
         #expect(secondaryCompletion.observedFinalized == true)
         await reader.waitUntilReadCount(2)
-        await store.refresh()
+        #expect(store.isRefreshing)
+        #expect(store.state == .loading)
+        #expect(await reader.readCount == 2)
+        await reader.resumeSecondRead()
+        await notifications.waitUntilSnapshotCount(1)
+        await sleeper.waitUntilRequestCount(1)
         #expect(store.state == .fresh(restartSnapshot))
+        #expect(await reader.readCount == 2)
         #expect(await reader.shutdownCount == 1)
 
         await primary.value
@@ -759,6 +768,7 @@ private actor MemoryQuotaCache: QuotaCaching {
 
 private actor RecordingNotifications: ExpiryNotificationReconciling {
     private(set) var snapshots: [QuotaSnapshot] = []
+    private var snapshotWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
     private(set) var enabledValues: [Bool] = []
     private var enabled = true
     private let permission: NotificationPermissionState
@@ -771,6 +781,16 @@ private actor RecordingNotifications: ExpiryNotificationReconciling {
 
     func reconcile(snapshot: QuotaSnapshot, now: Date) async {
         snapshots.append(snapshot)
+        let ready = snapshotWaiters.filter { $0.0 <= snapshots.count }
+        snapshotWaiters.removeAll { $0.0 <= snapshots.count }
+        ready.forEach { $0.1.resume() }
+    }
+
+    func waitUntilSnapshotCount(_ target: Int) async {
+        guard snapshots.count < target else { return }
+        await withCheckedContinuation { continuation in
+            snapshotWaiters.append((target, continuation))
+        }
     }
 
     func setEnabled(_ enabled: Bool) async {
@@ -968,6 +988,7 @@ private actor StartupToggleNotifications: ExpiryNotificationReconciling {
 private actor SuspendedCleanupQuotaReader: QuotaReading {
     private let restartSnapshot: QuotaSnapshot
     private var firstReadContinuation: CheckedContinuation<QuotaSnapshot, any Error>?
+    private var secondReadContinuation: CheckedContinuation<QuotaSnapshot, any Error>?
     private var firstShutdownContinuation: CheckedContinuation<Void, Never>?
     private var readWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
     private var shutdownStartWaiters: [CheckedContinuation<Void, Never>] = []
@@ -984,6 +1005,11 @@ private actor SuspendedCleanupQuotaReader: QuotaReading {
         if readCount == 1 {
             return try await withCheckedThrowingContinuation { continuation in
                 firstReadContinuation = continuation
+            }
+        }
+        if readCount == 2 {
+            return try await withCheckedThrowingContinuation { continuation in
+                secondReadContinuation = continuation
             }
         }
         return restartSnapshot
@@ -1021,6 +1047,12 @@ private actor SuspendedCleanupQuotaReader: QuotaReading {
         let shutdownContinuation = firstShutdownContinuation
         firstShutdownContinuation = nil
         shutdownContinuation?.resume()
+    }
+
+    func resumeSecondRead() {
+        let continuation = secondReadContinuation
+        secondReadContinuation = nil
+        continuation?.resume(returning: restartSnapshot)
     }
 
     private func resumeReadWaiters() {
