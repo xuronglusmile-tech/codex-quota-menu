@@ -99,7 +99,7 @@ struct MenuBarContentView: View {
                 Text("本月使用数据暂不可用")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .accessibilityLabel("本月 API 等价价值暂不可用")
+                    .accessibilityLabel("Sol API 假设场景暂不可用")
             }
             Divider()
             HStack {

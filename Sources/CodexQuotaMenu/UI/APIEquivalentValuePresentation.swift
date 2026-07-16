@@ -1,52 +1,53 @@
 import Foundation
 
 struct APIEquivalentValuePresentation: Equatable, Sendable {
-    static let trackMaximum = Decimal(250)
-    static let plusBenchmark = Decimal(20)
-    static let proBenchmark = Decimal(200)
-
     let rangeText: String
     let tokenText: String
-    let statusText: String
-    let lowerText: String
-    let upperText: String
-    let lowerFraction: Double
-    let upperFraction: Double
-    let plusFraction: Double
-    let proFraction: Double
+    let cachedHeavyText: String
+    let outputHeavyText: String
+    let trackMidpointText: String
+    let trackMaximumText: String
+    let cachedHeavyFraction: Double
+    let outputHeavyFraction: Double
 
     init(usage: MonthlyUsage) {
         let scenarios = APIEquivalentValueEstimator.estimate(tokens: usage.tokens)
-        let formattedLower = Self.dollars(scenarios.cachedHeavyUSD)
-        let formattedUpper = Self.dollars(scenarios.outputHeavyUSD)
-        lowerText = formattedLower
-        upperText = formattedUpper
-        rangeText = "\(formattedLower)～\(formattedUpper)"
+        let trackMaximum = Self.niceTrackMaximum(for: scenarios.outputHeavyUSD)
+        let formattedCachedHeavy = Self.dollars(scenarios.cachedHeavyUSD)
+        let formattedOutputHeavy = Self.dollars(scenarios.outputHeavyUSD)
+
+        cachedHeavyText = formattedCachedHeavy
+        outputHeavyText = formattedOutputHeavy
+        rangeText = "\(formattedCachedHeavy)～\(formattedOutputHeavy)"
         tokenText = Self.tokens(usage.tokens)
-        lowerFraction = Self.fraction(scenarios.cachedHeavyUSD)
-        upperFraction = Self.fraction(scenarios.outputHeavyUSD)
-        plusFraction = Self.fraction(Self.plusBenchmark)
-        proFraction = Self.fraction(Self.proBenchmark)
-        statusText = [
-            Self.status(
-                APIEquivalentValueEstimator.position(
-                    scenarios: scenarios,
-                    benchmark: Self.plusBenchmark
-                ),
-                name: "Plus $20"
-            ),
-            Self.status(
-                APIEquivalentValueEstimator.position(
-                    scenarios: scenarios,
-                    benchmark: Self.proBenchmark
-                ),
-                name: "Pro $200"
-            )
-        ].joined(separator: " · ")
+        trackMidpointText = Self.scaleDollars(trackMaximum / 2)
+        trackMaximumText = Self.scaleDollars(trackMaximum)
+        cachedHeavyFraction = Self.fraction(
+            scenarios.cachedHeavyUSD,
+            maximum: trackMaximum
+        )
+        outputHeavyFraction = Self.fraction(
+            scenarios.outputHeavyUSD,
+            maximum: trackMaximum
+        )
     }
 
-    private static func fraction(_ value: Decimal) -> Double {
-        let raw = NSDecimalNumber(decimal: value / trackMaximum).doubleValue
+    static func niceTrackMaximum(for value: Decimal) -> Decimal {
+        let minimum = Decimal(50)
+        guard value > minimum else { return minimum }
+
+        var power = Decimal(100)
+        while true {
+            for multiplier in [Decimal(1), Decimal(2), Decimal(5)] {
+                let candidate = power * multiplier
+                if value <= candidate { return candidate }
+            }
+            power *= 10
+        }
+    }
+
+    private static func fraction(_ value: Decimal, maximum: Decimal) -> Double {
+        let raw = NSDecimalNumber(decimal: value / maximum).doubleValue
         return min(max(raw, 0), 1)
     }
 
@@ -56,6 +57,18 @@ struct APIEquivalentValuePresentation: Equatable, Sendable {
             locale: Locale(identifier: "en_US_POSIX"),
             NSDecimalNumber(decimal: value).doubleValue
         )
+    }
+
+    private static func scaleDollars(_ value: Decimal) -> String {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 0
+        formatter.usesGroupingSeparator = true
+        let number = formatter.string(from: NSDecimalNumber(decimal: value))
+            ?? NSDecimalNumber(decimal: value).stringValue
+        return "$\(number)"
     }
 
     private static func tokens(_ value: Int64) -> String {
@@ -74,13 +87,5 @@ struct APIEquivalentValuePresentation: Equatable, Sendable {
             )
         }
         return "\(value) tokens"
-    }
-
-    private static func status(_ position: BenchmarkPosition, name: String) -> String {
-        switch position {
-        case .below: return "未达到 \(name)"
-        case .crossing: return "可能达到 \(name)"
-        case .reached: return "已达到 \(name)"
-        }
     }
 }

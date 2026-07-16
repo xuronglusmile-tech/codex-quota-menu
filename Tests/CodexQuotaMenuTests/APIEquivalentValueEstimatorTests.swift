@@ -27,31 +27,4 @@ struct APIEquivalentValueEstimatorTests {
             outputHeavyUSD: 0
         ))
     }
-
-    @Test(arguments: [Decimal(20), Decimal(200)])
-    func testTransitionalBenchmarkClassificationRemainsStable(
-        benchmark: Decimal
-    ) {
-        #expect(APIEquivalentValueEstimator.position(
-            scenarios: .init(
-                cachedHeavyUSD: benchmark - Decimal(string: "6.75")!,
-                outputHeavyUSD: benchmark - Decimal(string: "0.01")!
-            ),
-            benchmark: benchmark
-        ) == .below)
-        #expect(APIEquivalentValueEstimator.position(
-            scenarios: .init(
-                cachedHeavyUSD: benchmark - Decimal(string: "6.75")!,
-                outputHeavyUSD: benchmark + Decimal(21)
-            ),
-            benchmark: benchmark
-        ) == .crossing)
-        #expect(APIEquivalentValueEstimator.position(
-            scenarios: .init(
-                cachedHeavyUSD: benchmark,
-                outputHeavyUSD: benchmark + Decimal(21)
-            ),
-            benchmark: benchmark
-        ) == .reached)
-    }
 }

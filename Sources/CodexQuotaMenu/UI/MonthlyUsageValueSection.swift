@@ -11,31 +11,37 @@ struct MonthlyUsageValueSection: View {
         let value = presentation
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("本月 API 等价价值")
+                Text("Sol API 假设场景")
                 Spacer()
                 Text(value.rangeText).bold()
             }
             UsageValueTrack(presentation: value)
-            HStack(spacing: 12) {
-                Label("低估 \(value.lowerText)", systemImage: "square.fill")
-                    .foregroundStyle(.green)
-                Label("高估 \(value.upperText)", systemImage: "square.fill")
-                    .foregroundStyle(.yellow)
+            VStack(alignment: .leading, spacing: 2) {
+                Label(
+                    "缓存较多情景 \(value.cachedHeavyText)",
+                    systemImage: "square.fill"
+                )
+                .foregroundStyle(.green)
+                Label(
+                    "输出较多情景 \(value.outputHeavyText)",
+                    systemImage: "square.fill"
+                )
+                .foregroundStyle(.yellow)
             }
             .font(.caption2)
-            Text(value.statusText)
-                .font(.caption)
-                .foregroundStyle(.yellow)
+            Text("固定构成：80/15/5 · 40/40/20")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 1) {
-                Text("本月 \(value.tokenText) · GPT-5.6 Sol")
-                Text("API 等价估算，并非实际账单")
+                Text("本月 \(value.tokenText) · GPT-5.6 Sol 标准 API 价格")
+                Text("情景估算，并非实际账单或订阅价值")
             }
             .font(.caption2)
             .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "本月 API 等价价值 \(value.rangeText)，\(value.statusText)，本月 \(value.tokenText)，并非实际账单"
+            "Sol API 假设场景，缓存较多情景 \(value.cachedHeavyText)，输出较多情景 \(value.outputHeavyText)，本月 \(value.tokenText)，固定构成 80/15/5 与 40/40/20，情景估算，并非实际账单或订阅价值"
         )
     }
 }
@@ -47,56 +53,37 @@ private struct UsageValueTrack: View {
         VStack(spacing: 2) {
             GeometryReader { proxy in
                 let width = proxy.size.width
-                let lowerWidth = width * CGFloat(presentation.lowerFraction)
-                let upperWidth = width * CGFloat(presentation.upperFraction)
-                ZStack(alignment: .topLeading) {
+                let cachedHeavyWidth = width * CGFloat(presentation.cachedHeavyFraction)
+                let outputHeavyWidth = width * CGFloat(presentation.outputHeavyFraction)
+                ZStack(alignment: .leading) {
                     Capsule()
                         .fill(Color.secondary.opacity(0.22))
-                        .frame(height: 9)
-                        .offset(y: 11)
-                    ZStack(alignment: .leading) {
-                        Rectangle()
-                            .fill(Color.green)
-                            .frame(width: lowerWidth, height: 9)
-                        Rectangle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [.green, .yellow],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
+                    Rectangle()
+                        .fill(Color.green)
+                        .frame(width: cachedHeavyWidth)
+                    Rectangle()
+                        .fill(
+                            LinearGradient(
+                                colors: [.green, .yellow],
+                                startPoint: .leading,
+                                endPoint: .trailing
                             )
-                            .frame(width: max(upperWidth - lowerWidth, 0), height: 9)
-                            .offset(x: lowerWidth)
-                    }
-                    .frame(width: width, height: 9, alignment: .leading)
-                    .clipShape(Capsule())
-                    .offset(y: 11)
-                    marker(color: .red, height: 29)
-                        .offset(x: width * CGFloat(presentation.plusFraction) - 1)
-                    marker(color: .purple, height: 29)
-                        .offset(x: width * CGFloat(presentation.proFraction) - 1)
+                        )
+                        .frame(width: max(outputHeavyWidth - cachedHeavyWidth, 0))
+                        .offset(x: cachedHeavyWidth)
                 }
+                .clipShape(Capsule())
             }
-            .frame(height: 31)
-            GeometryReader { proxy in
-                let width = proxy.size.width
-                ZStack(alignment: .topLeading) {
-                    Text("$0").position(x: 6, y: 6)
-                    Text("Plus $20").foregroundStyle(.red)
-                        .position(x: max(26, width * CGFloat(presentation.plusFraction)), y: 6)
-                    Text("Pro $200").foregroundStyle(.purple)
-                        .position(x: width * CGFloat(presentation.proFraction), y: 6)
-                    Text("$250").position(x: width - 14, y: 6)
-                }
-                .font(.system(size: 9))
+            .frame(height: 9)
+            HStack {
+                Text("$0")
+                Spacer()
+                Text(presentation.trackMidpointText)
+                Spacer()
+                Text(presentation.trackMaximumText)
             }
-            .frame(height: 12)
+            .font(.system(size: 9))
         }
         .accessibilityHidden(true)
-    }
-
-    private func marker(color: Color, height: CGFloat) -> some View {
-        Rectangle().fill(color).frame(width: 2, height: height)
     }
 }
