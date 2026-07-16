@@ -16,28 +16,28 @@ struct APIEquivalentValuePresentation: Equatable, Sendable {
     let proFraction: Double
 
     init(usage: MonthlyUsage) {
-        let range = APIEquivalentValueEstimator.estimate(tokens: usage.tokens)
-        let formattedLower = Self.dollars(range.lowerUSD)
-        let formattedUpper = Self.dollars(range.upperUSD)
+        let scenarios = APIEquivalentValueEstimator.estimate(tokens: usage.tokens)
+        let formattedLower = Self.dollars(scenarios.cachedHeavyUSD)
+        let formattedUpper = Self.dollars(scenarios.outputHeavyUSD)
         lowerText = formattedLower
         upperText = formattedUpper
         rangeText = "\(formattedLower)～\(formattedUpper)"
         tokenText = Self.tokens(usage.tokens)
-        lowerFraction = Self.fraction(range.lowerUSD)
-        upperFraction = Self.fraction(range.upperUSD)
+        lowerFraction = Self.fraction(scenarios.cachedHeavyUSD)
+        upperFraction = Self.fraction(scenarios.outputHeavyUSD)
         plusFraction = Self.fraction(Self.plusBenchmark)
         proFraction = Self.fraction(Self.proBenchmark)
         statusText = [
             Self.status(
                 APIEquivalentValueEstimator.position(
-                    range: range,
+                    scenarios: scenarios,
                     benchmark: Self.plusBenchmark
                 ),
                 name: "Plus $20"
             ),
             Self.status(
                 APIEquivalentValueEstimator.position(
-                    range: range,
+                    scenarios: scenarios,
                     benchmark: Self.proBenchmark
                 ),
                 name: "Pro $200"
