@@ -31,6 +31,7 @@ struct PackagingContractTests {
         #expect(valueSource.contains("$250"))
         #expect(valueSource.contains("GPT-5.6 Sol"))
         #expect(valueSource.contains("API 等价估算，并非实际账单"))
+        #expect(valueSource.contains(#"Text("API 等价估算，并非实际账单")"#))
         #expect(menuSource.contains("可用重置次数"))
         #expect(menuSource.contains("登录时启动"))
         #expect(menuSource.contains("到期通知"))

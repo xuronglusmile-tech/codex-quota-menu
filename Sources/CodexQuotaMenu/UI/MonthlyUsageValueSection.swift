@@ -26,9 +26,12 @@ struct MonthlyUsageValueSection: View {
             Text(value.statusText)
                 .font(.caption)
                 .foregroundStyle(.yellow)
-            Text("本月 \(value.tokenText) · GPT-5.6 Sol · API 等价估算，并非实际账单")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("本月 \(value.tokenText) · GPT-5.6 Sol")
+                Text("API 等价估算，并非实际账单")
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
