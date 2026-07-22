@@ -69,23 +69,15 @@ struct PackagingContractTests {
             encoding: .utf8
         )
 
-        #expect(labelSource.contains("Text(presentation.text)"))
-        #expect(labelSource.contains("MenuBarQuotaPill("))
-        #expect(labelSource.contains("Color.green"))
-        #expect(labelSource.contains("Color.yellow"))
-        #expect(labelSource.contains("Color.red"))
+        #expect(labelSource.contains("NSString(string: presentation.text)"))
+        #expect(labelSource.contains("Image(nsImage: MenuBarQuotaStatusImage.make(presentation))"))
+        #expect(labelSource.contains("image.isTemplate = false"))
+        #expect(labelSource.contains("NSColor.systemGreen"))
+        #expect(labelSource.contains("NSColor.systemYellow"))
+        #expect(labelSource.contains("NSColor.systemRed"))
+        #expect(labelSource.contains("max(54, textSize.width + 22)"))
         #expect(labelSource.contains("presentation.fillFraction"))
         #expect(labelSource.contains("presentation.accessibilityLabel"))
-        #expect(!labelSource.contains("GeometryReader"))
-        #expect(labelSource.contains("fillWidth * fillFraction"))
-
-        let percentage = try #require(
-            labelSource.range(of: "Text(presentation.text)")
-        )
-        let pill = try #require(
-            labelSource.range(of: "MenuBarQuotaPill(")
-        )
-        #expect(percentage.lowerBound < pill.lowerBound)
     }
 
     @Test
