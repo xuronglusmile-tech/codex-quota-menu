@@ -47,7 +47,7 @@ final class QuotaStore: ObservableObject {
     }
 
     var menuTitle: String {
-        MenuBarPresentation.title(for: state)
+        MenuBarPresentation.make(for: state).text
     }
 
     func setNotificationsEnabled(_ enabled: Bool) async {

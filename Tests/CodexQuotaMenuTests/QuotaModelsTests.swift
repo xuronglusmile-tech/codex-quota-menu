@@ -57,17 +57,4 @@ struct QuotaModelsTests {
         #expect(QuotaDisplayState.unavailable(message: "missing").snapshot == nil)
     }
 
-    @Test
-    func testMenuTitleCoversFreshStaleAndUnavailableStates() {
-        let snapshot = QuotaSnapshot(
-            windows: [QuotaWindow(id: "weekly", label: "每周额度", usedPercent: 53, durationMinutes: 10_080, resetsAt: nil)],
-            availableResetCount: 5,
-            resetCredits: [],
-            fetchedAt: now
-        )
-        #expect(MenuBarPresentation.title(for: .fresh(snapshot)) == "47% · 5")
-        #expect(MenuBarPresentation.title(for: .stale(snapshot, message: "offline")) == "47% · 5 !")
-        #expect(MenuBarPresentation.title(for: .loading) == "— · —")
-        #expect(MenuBarPresentation.title(for: .unavailable(message: "missing")) == "不可用")
-    }
 }

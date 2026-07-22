@@ -41,6 +41,7 @@
 - Create: `Tests/CodexQuotaMenuTests/MenuBarPresentationTests.swift`
 - Modify: `Tests/CodexQuotaMenuTests/QuotaModelsTests.swift`
 - Modify: `Sources/CodexQuotaMenu/UI/MenuBarPresentation.swift`
+- Modify: `Sources/CodexQuotaMenu/UI/QuotaStore.swift`
 
 **Interfaces:**
 - Consumes: `QuotaDisplayState`, `QuotaSnapshot`, `QuotaWindow.remainingPercent`, `QuotaProgressPresentation.band(remainingPercent:durationMinutes:)`, and `QuotaProgressBand`.
@@ -293,6 +294,18 @@ struct MenuBarPresentation: Equatable, Sendable {
 }
 ```
 
+Keep the existing app label compiling during this task by changing the body of
+`QuotaStore.menuTitle` to read the new model's text:
+
+```swift
+var menuTitle: String {
+    MenuBarPresentation.make(for: state).text
+}
+```
+
+Task 2 replaces this temporary text-only bridge with `menuPresentation` when
+the custom pill view exists.
+
 - [ ] **Step 4: Run the focused presentation tests**
 
 Run:
@@ -307,6 +320,7 @@ Expected: PASS with exit status 0 and no compiler warnings.
 
 ```bash
 git add Sources/CodexQuotaMenu/UI/MenuBarPresentation.swift \
+  Sources/CodexQuotaMenu/UI/QuotaStore.swift \
   Tests/CodexQuotaMenuTests/MenuBarPresentationTests.swift \
   Tests/CodexQuotaMenuTests/QuotaModelsTests.swift
 git commit -m "feat: model weekly menu bar quota"
