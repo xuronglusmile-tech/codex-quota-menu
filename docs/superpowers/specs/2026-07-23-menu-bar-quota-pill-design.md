@@ -3,9 +3,9 @@
 ## Summary
 
 Replace the current gauge icon and compound `percentage · reset count` menu-bar
-title with a compact macOS battery-style quota indicator. The left side is a
-rounded pill whose fill level represents the weekly Codex quota remaining. The
-right side shows the same percentage as text, for example `31%`.
+title with a compact macOS battery-style quota indicator. The left side shows
+the weekly remaining percentage, for example `31%`. A rounded pill sits to its
+right, with a fill level that represents the same weekly quota remaining.
 
 Reset-credit count remains available in the popover and is removed from the
 menu-bar label. This makes the always-visible status answer one question only:
@@ -40,12 +40,15 @@ the fill. Values below zero render as 0%; values above 100 render as 100%.
 
 ## Visual design
 
-The menu-bar label is ordered left to right:
+The menu-bar label is ordered left to right, matching the macOS battery status
+layout:
 
-1. a rounded rectangular outline sized for the menu-bar cap height;
-2. an inset fill whose width equals the weekly remaining fraction;
-3. a short gap;
-4. the numeric remaining percentage, such as `31%`.
+1. the numeric remaining percentage, such as `31%`;
+2. a short gap;
+3. a rounded rectangular outline sized for the menu-bar cap height;
+4. an inset fill whose width equals the weekly remaining fraction.
+
+The percentage is always outside the pill and never overlaid on its fill.
 
 The outline remains readable in light and dark menu-bar appearances. The fill
 uses the existing status bands:
@@ -78,9 +81,9 @@ Add a small pure presentation model that maps `QuotaDisplayState` to the menu
 bar's percentage, fill fraction, status band, text, and accessibility label.
 Keep weekly-window selection and clamping in this testable layer.
 
-Add a dedicated SwiftUI label view that draws the pill and text. The app entry
-point supplies the presentation derived from `QuotaStore.state`; no transport,
-domain, or persistence code changes.
+Add a dedicated SwiftUI label view that draws the text followed by the pill.
+The app entry point supplies the presentation derived from `QuotaStore.state`;
+no transport, domain, or persistence code changes.
 
 ## Testing
 
@@ -104,6 +107,6 @@ verification, and real menu-bar inspection after installation.
 ## Rollout
 
 Install through the existing atomic installer. Acceptance requires the menu bar
-to show a pill plus weekly percentage at normal display scale in both light and
-dark menu-bar appearances, while the popover continues to show reset credits
-and all existing sections unchanged.
+to show a weekly percentage followed by a pill at normal display scale in both
+light and dark menu-bar appearances, while the popover continues to show reset
+credits and all existing sections unchanged.
