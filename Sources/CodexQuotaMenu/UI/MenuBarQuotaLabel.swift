@@ -21,20 +21,22 @@ struct MenuBarQuotaLabel: View {
 private struct MenuBarQuotaPill: View {
     let fillFraction: Double
     let band: QuotaProgressBand?
+    private let fillWidth: CGFloat = 18
 
     var body: some View {
         ZStack(alignment: .leading) {
             Capsule(style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.7), lineWidth: 1)
+                .fill(Color.clear)
 
-            GeometryReader { proxy in
-                if fillFraction > 0 {
-                    Capsule(style: .continuous)
-                        .fill(fillColor)
-                        .frame(width: proxy.size.width * fillFraction)
-                }
+            if fillFraction > 0 {
+                Capsule(style: .continuous)
+                    .fill(fillColor)
+                    .frame(width: fillWidth * fillFraction, height: 6)
+                    .padding(.leading, 2)
             }
-            .padding(2)
+
+            Capsule(style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.7), lineWidth: 1)
         }
         .frame(width: 22, height: 10)
         .accessibilityHidden(true)

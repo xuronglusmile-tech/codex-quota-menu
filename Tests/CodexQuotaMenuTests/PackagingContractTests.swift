@@ -76,6 +76,8 @@ struct PackagingContractTests {
         #expect(labelSource.contains("Color.red"))
         #expect(labelSource.contains("presentation.fillFraction"))
         #expect(labelSource.contains("presentation.accessibilityLabel"))
+        #expect(!labelSource.contains("GeometryReader"))
+        #expect(labelSource.contains("fillWidth * fillFraction"))
 
         let percentage = try #require(
             labelSource.range(of: "Text(presentation.text)")
