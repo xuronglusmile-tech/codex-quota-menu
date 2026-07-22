@@ -2,6 +2,10 @@
 
 Native read-only macOS menu-bar display for Codex quota windows and reset-credit expiration times.
 
+The menu bar shows the weekly remaining percentage to the left of a
+battery-style pill. The pill fill uses green at 20% or above, yellow from 10%
+through 19%, and red below 10%; reset-credit count remains in the popover.
+
 ## Build and test
 
 Requires macOS 14 or later and the Apple Command Line Tools.
