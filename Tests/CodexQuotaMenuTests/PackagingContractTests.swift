@@ -75,9 +75,9 @@ struct PackagingContractTests {
         #expect(labelSource.contains("NSColor.systemGreen"))
         #expect(labelSource.contains("NSColor.systemYellow"))
         #expect(labelSource.contains("NSColor.systemRed"))
-        #expect(labelSource.contains("max(72, textSize.width + 41)"))
-        #expect(labelSource.contains("width: 34"))
-        #expect(labelSource.contains("height: 18"))
+        #expect(labelSource.contains("max(62, textSize.width + 32)"))
+        #expect(labelSource.contains("width: 26"))
+        #expect(labelSource.contains("height: 14"))
         #expect(labelSource.contains("presentation.fillFraction"))
         #expect(labelSource.contains("presentation.accessibilityLabel"))
     }
