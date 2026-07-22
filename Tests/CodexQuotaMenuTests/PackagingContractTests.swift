@@ -50,6 +50,43 @@ struct PackagingContractTests {
     }
 
     @Test
+    func testMenuBarUsesPercentageFirstQuotaPillAndNoGaugeSymbol() throws {
+        let appSource = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/CodexQuotaMenu/App/CodexQuotaMenuApp.swift"
+            ),
+            encoding: .utf8
+        )
+        try #require(appSource.contains(
+            "MenuBarQuotaLabel(presentation: store.menuPresentation)"
+        ))
+        #expect(!appSource.contains("gauge.with.dots.needle.50percent"))
+
+        let labelSource = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/CodexQuotaMenu/UI/MenuBarQuotaLabel.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(labelSource.contains("Text(presentation.text)"))
+        #expect(labelSource.contains("MenuBarQuotaPill("))
+        #expect(labelSource.contains("Color.green"))
+        #expect(labelSource.contains("Color.yellow"))
+        #expect(labelSource.contains("Color.red"))
+        #expect(labelSource.contains("presentation.fillFraction"))
+        #expect(labelSource.contains("presentation.accessibilityLabel"))
+
+        let percentage = try #require(
+            labelSource.range(of: "Text(presentation.text)")
+        )
+        let pill = try #require(
+            labelSource.range(of: "MenuBarQuotaPill(")
+        )
+        #expect(percentage.lowerBound < pill.lowerBound)
+    }
+
+    @Test
     func testInfoPlistDeclaresCompleteMenuBarOnlyBundleContract() throws {
         let plist = root.appendingPathComponent("Resources/Info.plist")
         let data = try Data(contentsOf: plist)

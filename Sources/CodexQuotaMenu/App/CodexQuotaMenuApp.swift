@@ -56,10 +56,7 @@ struct CodexQuotaMenuApp: App {
                 launchAtLogin: launchAtLogin
             )
         } label: {
-            Label(
-                store.menuTitle,
-                systemImage: "gauge.with.dots.needle.50percent"
-            )
+            MenuBarQuotaLabel(presentation: store.menuPresentation)
         }
         .menuBarExtraStyle(.window)
     }
