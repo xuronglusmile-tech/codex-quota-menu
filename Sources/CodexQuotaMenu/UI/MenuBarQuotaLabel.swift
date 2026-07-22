@@ -18,7 +18,7 @@ private enum MenuBarQuotaStatusImage {
         ]
         let text = NSString(string: presentation.text)
         let textSize = text.size(withAttributes: textAttributes)
-        let imageSize = NSSize(width: max(62, textSize.width + 32), height: 20)
+        let imageSize = NSSize(width: max(60, textSize.width + 30), height: 19)
         let image = NSImage(size: imageSize)
         image.isTemplate = false
         image.lockFocus()
@@ -34,9 +34,9 @@ private enum MenuBarQuotaStatusImage {
 
         let pillRect = NSRect(
             x: textSize.width + 5,
-            y: (imageSize.height - 14) / 2,
-            width: 26,
-            height: 14
+            y: (imageSize.height - 13) / 2,
+            width: 24,
+            height: 13
         )
         let pillPath = NSBezierPath(
             roundedRect: pillRect,
