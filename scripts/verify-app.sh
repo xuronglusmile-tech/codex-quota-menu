@@ -52,6 +52,7 @@ test -x "$EXECUTABLE" || fail "missing executable CodexQuotaMenu"
 expect_plist CFBundleDevelopmentRegion zh_CN
 expect_plist CFBundleDisplayName "Codex Quota Menu"
 expect_plist CFBundleExecutable CodexQuotaMenu
+expect_plist CFBundleIconFile AppIcon.icns
 expect_plist CFBundleIdentifier local.scott.CodexQuotaMenu
 expect_plist CFBundleInfoDictionaryVersion 6.0
 expect_plist CFBundleName "Codex Quota Menu"

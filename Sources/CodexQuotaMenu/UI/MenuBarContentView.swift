@@ -76,6 +76,7 @@ struct MenuBarContentView: View {
                         Spacer()
                         Text("\(window.remainingPercent)%")
                             .bold()
+                            .foregroundStyle(.white)
                     }
                     ProgressView(
                         value: Double(window.remainingPercent),
