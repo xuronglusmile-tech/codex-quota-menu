@@ -18,6 +18,8 @@ Requires macOS 14 or later and the Apple Command Line Tools.
 
 The test and build scripts keep their SwiftPM and module caches under the project `.build` directory. They default to SDK interface compiler compatibility version `6.3.2`; set `CODEX_QUOTA_INTERFACE_COMPILER_VERSION` only when the installed SDK requires another version. The verification script runs the focused fake-client whitelist test, rebuilds the current release executable, and byte-compares it with the signed bundle executable.
 
+`build-app.sh` rasterizes `Resources/AppIcon.svg` with the macOS-native `sips` and `iconutil` tools, writes `AppIcon.icns` into the application bundle, and signs the finished `.app`. The generated `.build` and `dist` directories are local build outputs and are intentionally ignored by Git.
+
 The real-account smoke test is opt-in and must be run only with approval:
 
 ```bash

@@ -48,6 +48,11 @@ test -d "$APP" || fail "missing app bundle: $APP"
 test -f "$PLIST" || fail "missing Info.plist"
 /usr/bin/plutil -lint "$PLIST" >/dev/null
 test -x "$EXECUTABLE" || fail "missing executable CodexQuotaMenu"
+ICON="$APP/Contents/Resources/AppIcon.icns"
+test -s "$ICON" || fail "missing app icon: $ICON"
+/usr/bin/plutil -extract CFBundleIconFile raw -o - "$APP/Contents/Info.plist" \
+  | /usr/bin/grep -Fx "AppIcon.icns" >/dev/null \
+  || fail "Info.plist does not declare AppIcon.icns"
 
 expect_plist CFBundleDevelopmentRegion zh_CN
 expect_plist CFBundleDisplayName "Codex Quota Menu"
@@ -76,10 +81,13 @@ cd "$ROOT"
 swift build -c release "${SWIFT_ARGS[@]}"
 BIN_DIR="$(swift build -c release --show-bin-path "${SWIFT_ARGS[@]}")"
 REFERENCE_APP="$SUPPORT_DIR/verification-reference/Codex Quota Menu.app"
+REFERENCE_ICON="$SUPPORT_DIR/verification-reference/AppIcon.icns"
 rm -rf "$REFERENCE_APP"
 mkdir -p "$REFERENCE_APP/Contents/MacOS" "$REFERENCE_APP/Contents/Resources"
+"$ROOT/scripts/build-app-icon.sh" "$REFERENCE_ICON"
 cp "$BIN_DIR/CodexQuotaMenu" "$REFERENCE_APP/Contents/MacOS/CodexQuotaMenu"
 cp "$ROOT/Resources/Info.plist" "$REFERENCE_APP/Contents/Info.plist"
+cp "$REFERENCE_ICON" "$REFERENCE_APP/Contents/Resources/AppIcon.icns"
 /usr/bin/codesign --force --sign - "$REFERENCE_APP"
 CURRENT_RELEASE_EXECUTABLE="$REFERENCE_APP/Contents/MacOS/CodexQuotaMenu"
 /usr/bin/cmp -s "$CURRENT_RELEASE_EXECUTABLE" "$EXECUTABLE" \

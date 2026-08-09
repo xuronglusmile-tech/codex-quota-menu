@@ -203,6 +203,9 @@ struct PackagingContractTests {
         #expect(script.contains("test -x"))
         #expect(script.contains("codesign --verify --strict"))
         #expect(script.contains("Signature=adhoc"))
+        #expect(script.contains("Contents/Resources/AppIcon.icns"))
+        #expect(script.contains("test -s \"$ICON\""))
+        #expect(script.contains("plutil -extract CFBundleIconFile raw -o - \"$APP/Contents/Info.plist\""))
         #expect(!script.contains("--deep"))
         #expect(script.contains(#"APP="${1:-$ROOT/dist/Codex Quota Menu.app}""#))
         #expect(script.contains(#""$ROOT/scripts/audit-outbound-methods.sh" "$ROOT/Sources""#))
@@ -211,6 +214,8 @@ struct PackagingContractTests {
         #expect(script.contains(#"REFERENCE_APP="$SUPPORT_DIR/verification-reference/Codex Quota Menu.app""#))
         #expect(script.contains(#"cp "$BIN_DIR/CodexQuotaMenu" "$REFERENCE_APP/Contents/MacOS/CodexQuotaMenu""#))
         #expect(script.contains(#"codesign --force --sign - "$REFERENCE_APP""#))
+        #expect(script.contains(#""$ROOT/scripts/build-app-icon.sh" "$REFERENCE_ICON""#))
+        #expect(script.contains(#"cp "$REFERENCE_ICON" "$REFERENCE_APP/Contents/Resources/AppIcon.icns""#))
 
         let releaseBuild = try #require(script.range(of: "swift build -c release"))
         let byteComparison = try #require(script.range(of: #"cmp -s "$CURRENT_RELEASE_EXECUTABLE" "$EXECUTABLE""#))
