@@ -47,6 +47,28 @@ struct PackagingContractTests {
         #expect(menuSource.contains("打开 ChatGPT"))
         #expect(menuSource.contains("退出"))
         #expect(menuSource.contains(".frame(width: 330)"))
+        #expect(menuSource.contains("Text(\"\\(window.remainingPercent)%\")"))
+        #expect(menuSource.contains(".foregroundStyle(.white)"))
+    }
+
+    @Test
+    func testAppIconIsDeclaredAndCopiedIntoTheBundle() throws {
+        let plistSource = try String(
+            contentsOf: root.appendingPathComponent("Resources/Info.plist"),
+            encoding: .utf8
+        )
+        let buildScript = try String(
+            contentsOf: root.appendingPathComponent("scripts/build-app.sh"),
+            encoding: .utf8
+        )
+        let iconScriptURL = root.appendingPathComponent("scripts/build-app-icon.sh")
+
+        #expect(plistSource.contains("CFBundleIconFile"))
+        #expect(plistSource.contains("AppIcon.icns"))
+        #expect(buildScript.contains("build-app-icon.sh"))
+        #expect(buildScript.contains("Contents/Resources/AppIcon.icns"))
+        #expect(FileManager.default.fileExists(atPath: iconScriptURL.path))
+        #expect(try executablePermissions(of: iconScriptURL) == 0o755)
     }
 
     @Test
@@ -95,6 +117,7 @@ struct PackagingContractTests {
             "CFBundleDevelopmentRegion",
             "CFBundleDisplayName",
             "CFBundleExecutable",
+            "CFBundleIconFile",
             "CFBundleIdentifier",
             "CFBundleInfoDictionaryVersion",
             "CFBundleName",
@@ -108,6 +131,7 @@ struct PackagingContractTests {
         #expect(object["CFBundleDevelopmentRegion"] as? String == "zh_CN")
         #expect(object["CFBundleDisplayName"] as? String == "Codex Quota Menu")
         #expect(object["CFBundleExecutable"] as? String == "CodexQuotaMenu")
+        #expect(object["CFBundleIconFile"] as? String == "AppIcon.icns")
         #expect(object["CFBundleIdentifier"] as? String == "local.scott.CodexQuotaMenu")
         #expect(object["CFBundleInfoDictionaryVersion"] as? String == "6.0")
         #expect(object["CFBundleName"] as? String == "Codex Quota Menu")
@@ -163,6 +187,7 @@ struct PackagingContractTests {
             "CFBundleDevelopmentRegion",
             "CFBundleDisplayName",
             "CFBundleExecutable",
+            "CFBundleIconFile",
             "CFBundleIdentifier",
             "CFBundleInfoDictionaryVersion",
             "CFBundleName",
