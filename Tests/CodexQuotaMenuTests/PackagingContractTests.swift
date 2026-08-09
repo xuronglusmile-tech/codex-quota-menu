@@ -48,7 +48,7 @@ struct PackagingContractTests {
         #expect(menuSource.contains("退出"))
         #expect(menuSource.contains(".frame(width: 330)"))
         #expect(menuSource.contains("Text(\"\\(window.remainingPercent)%\")"))
-        #expect(menuSource.contains(".foregroundStyle(.white)"))
+        #expect(menuSource.contains(".foregroundStyle(.black)"))
     }
 
     @Test
@@ -94,6 +94,8 @@ struct PackagingContractTests {
         #expect(labelSource.contains("NSString(string: presentation.text)"))
         #expect(labelSource.contains("Image(nsImage: MenuBarQuotaStatusImage.make(presentation))"))
         #expect(labelSource.contains("image.isTemplate = false"))
+        #expect(labelSource.contains(".foregroundColor: NSColor.white"))
+        #expect(!labelSource.contains(".foregroundColor: NSColor.labelColor"))
         #expect(labelSource.contains("NSColor.systemGreen"))
         #expect(labelSource.contains("NSColor.systemYellow"))
         #expect(labelSource.contains("NSColor.systemRed"))

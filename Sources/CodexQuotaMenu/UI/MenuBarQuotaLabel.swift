@@ -14,7 +14,7 @@ private enum MenuBarQuotaStatusImage {
     static func make(_ presentation: MenuBarPresentation) -> NSImage {
         let textAttributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold),
-            .foregroundColor: NSColor.labelColor
+            .foregroundColor: NSColor.white
         ]
         let text = NSString(string: presentation.text)
         let textSize = text.size(withAttributes: textAttributes)
